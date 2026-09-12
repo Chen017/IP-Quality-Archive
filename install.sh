@@ -136,7 +136,7 @@ if [[ -f "$SCRIPT_DIR/ipqa.sh" ]]; then
     cp "$SCRIPT_DIR/ipqa.sh" "$INSTALL_DIR/ipqa.sh"
 else
     echo -e "${C_CYAN}从远程获取 ipqa.sh...${C_RESET}"
-    curl -sL https://raw.githubusercontent.com/xykt/IPQuality/main/ipqa.sh -o "$INSTALL_DIR/ipqa.sh" || {
+    curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh -o "$INSTALL_DIR/ipqa.sh" || {
         echo -e "${C_RED}错误: 无法获取 ipqa.sh${C_RESET}"
         exit 1
     }

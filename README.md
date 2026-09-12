@@ -64,7 +64,7 @@
 在终端中执行以下命令（适用于 Debian / Ubuntu / CentOS / RHEL / Alpine / Arch / Fedora 等）：
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/xykt/IPQuality/main/install.sh)
+bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/install.sh)
 ```
 
 或如果已克隆本仓库：

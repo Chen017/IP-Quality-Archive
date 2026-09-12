@@ -5,11 +5,7 @@
 ## 一键安装
 
 ```bash
-# 交互式安装
 bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/install.sh)
-
-# 无人值守安装（默认每日北京时间 04:00 检测）
-bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/install.sh) -y
 ```
 
 安装完成后在终端运行 `ipqa` 即可。

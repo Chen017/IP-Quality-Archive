@@ -1,0 +1,18 @@
+# IPQA Data & Logs
+data/
+logs/
+*.log
+*.tmp
+
+# Local Runtime
+.ipqa/
+.test_ipqa/
+
+# Upstream reference directory
+IP-Quality-Detection-Project/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

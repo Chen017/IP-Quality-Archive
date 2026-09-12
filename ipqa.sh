@@ -1488,6 +1488,32 @@ uninstall_ipqa() {
 }
 
 # ==============================================================================
+# 在线更新 IPQA (update_ipqa)
+# ==============================================================================
+update_ipqa() {
+    clear
+    print_module_header "🔄 在线更新 IPQA 系统"
+    echo -e "${C_CYAN}正在检查并下载 IPQA 最新版本...${C_RESET}\n"
+    local tmp_file="/tmp/ipqa_update_$$.sh"
+    if curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh -o "$tmp_file"; then
+        if bash -n "$tmp_file" 2>/dev/null; then
+            cp "$tmp_file" "$IPQA_HOME/ipqa.sh"
+            chmod +x "$IPQA_HOME/ipqa.sh"
+            rm -f "$tmp_file"
+            echo -e "${C_GREEN}${C_BOLD}✔ IPQA 主程序已成功更新至最新版本！${C_RESET}\n"
+            exit 0
+        else
+            rm -f "$tmp_file"
+            echo -e "${C_RED}错误: 下载的更新文件脚本校验失败${C_RESET}\n"
+            exit 1
+        fi
+    else
+        echo -e "${C_RED}错误: 无法连接 GitHub 下载最新版本，请检查网络${C_RESET}\n"
+        exit 1
+    fi
+}
+
+# ==============================================================================
 # 主菜单 Panel 渲染
 # ==============================================================================
 render_panel() {
@@ -1601,15 +1627,13 @@ render_panel() {
             fi
         done
     fi
-
     echo ""
     echo -e "${C_GRAY}── ${C_CYAN}📋 功能菜单导航${C_RESET} ${C_GRAY}───────────────────────────────────────────────────${C_RESET}"
     echo -e "  ${C_BOLD}[1]${C_RESET} 📊 IP 类型属性变动       ${C_BOLD}[6]${C_RESET} 📋 历史存档图表快照"
     echo -e "  ${C_BOLD}[2]${C_RESET} 📈 综合风险评分图        ${C_BOLD}[7]${C_RESET} ⚙️  配置定时任务"
     echo -e "  ${C_BOLD}[3]${C_RESET} 🔬 风险因子综合矩阵      ${C_BOLD}[8]${C_RESET} 🔄 立即执行检测"
     echo -e "  ${C_BOLD}[4]${C_RESET} 🎬 流媒体与AI解锁        ${C_BOLD}[9]${C_RESET} 🗑️  清理历史数据"
-    echo -e "  ${C_BOLD}[5]${C_RESET} 📬 邮件与黑名单监测      ${C_BOLD}[x]${C_RESET} 🧹 彻底卸载系统"
-    echo -e "                                ${C_BOLD}[0]${C_RESET} 🚪 退出程序"
+    echo -e "  ${C_BOLD}[5]${C_RESET} 📬 邮件与黑名单监测      ${C_BOLD}[0]${C_RESET} 🚪 退出系统  ${C_BOLD}[x]${C_RESET} 🧹 卸载系统"
     echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}"
 }
 
@@ -1673,6 +1697,9 @@ case "$1" in
             echo "Latest Time: $(basename "$latest" .json)"
         fi
         ;;
+    --update)
+        update_ipqa
+        ;;
     --uninstall)
         uninstall_ipqa
         ;;
@@ -1685,6 +1712,7 @@ case "$1" in
         echo "  --check       立即执行一次检测并生成存档与告警"
         echo "  --cron        静默模式执行检测 (专用于 crontab 定时任务，自动同步最新核心)"
         echo "  --status      查看当前存档与状态概况"
+        echo "  --update      一键从 GitHub 在线更新 IPQA 主程序"
         echo "  --uninstall   干净卸载 IPQA 并清理任务与软链接"
         echo "  --help, -h    显示本帮助信息"
         ;;

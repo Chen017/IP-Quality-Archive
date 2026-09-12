@@ -119,11 +119,25 @@ if [[ "$ACTION" == "uninstall" ]]; then
     do_uninstall
 fi
 
-echo -e "${C_CYAN}${C_BOLD}"
-echo "╔══════════════════════════════════════════════════════════════════╗"
-echo "║             🔍 IP 质量存档监测系统 (IPQA) 一键安装               ║"
-echo "╚══════════════════════════════════════════════════════════════════╝"
-echo -e "${C_RESET}"
+IS_UPDATE=false
+if [[ -f "$INSTALL_DIR/ipqa.sh" ]]; then
+    IS_UPDATE=true
+fi
+
+if [[ "$IS_UPDATE" == "true" ]]; then
+    echo -e "${C_CYAN}${C_BOLD}"
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║             🔄 IP 质量存档监测系统 (IPQA) 在线更新               ║"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo -e "${C_RESET}"
+    echo -e "${C_GREEN}检测到已安装 IPQA，正在更新主程序与检测引擎 (历史数据与配置将完整保留)...${C_RESET}\n"
+else
+    echo -e "${C_CYAN}${C_BOLD}"
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║             🔍 IP 质量存档监测系统 (IPQA) 一键安装               ║"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo -e "${C_RESET}"
+fi
 
 # 1. 检测系统与包管理器
 echo -e "${C_BOLD}[1/5] 检查系统环境与必要依赖...${C_RESET}"
@@ -279,30 +293,38 @@ else
     echo -e "${C_GREEN}✔ 全局指令已注册: $BIN_DIR/ipqa${C_RESET}"
 fi
 
-echo -e "\n${C_GREEN}${C_BOLD}🎉 IPQA 安装成功！${C_RESET}"
-
-# 定时任务配置询问 (交互式)
-if [[ "$NON_INTERACTIVE" == "false" ]]; then
-    echo -ne "\n${C_CYAN}是否立即开启每 6 小时自动检测一次并归档? (Y/n): ${C_RESET}"
-    read -r setup_cron_ans
-    setup_cron_ans="${setup_cron_ans:-y}"
-    if [[ "$setup_cron_ans" =~ ^[yY] ]]; then
-        CRON_BIN="$(command -v ipqa 2>/dev/null || echo "$INSTALL_DIR/ipqa.sh")"
-        existing=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
-        {
-            [[ -n "$existing" ]] && echo "$existing"
-            echo "# IPQA AUTO CHECK - DO NOT EDIT MANUALLY"
-            echo "0 */6 * * * $CRON_BIN --cron >> $INSTALL_DIR/logs/ipqa.log 2>&1"
-        } | crontab -
-        echo -e "${C_GREEN}✔ 已为您激活每 6 小时定时检测 (Cron: 0 */6 * * *)${C_RESET}"
+if [[ "$IS_UPDATE" == "true" ]]; then
+    echo -e "\n${C_GREEN}${C_BOLD}🎉 IPQA 已成功更新至最新版本！${C_RESET}"
+    if crontab -l 2>/dev/null | grep -qE "ipqa(\.sh)? --cron"; then
+        echo -e "${C_GREEN}✔ 已自动保留原定时检测任务${C_RESET}"
     fi
+    echo -e "${C_GREEN}✔ 历史存档与用户配置已完整保留${C_RESET}"
+else
+    echo -e "\n${C_GREEN}${C_BOLD}🎉 IPQA 安装成功！${C_RESET}"
 
-    echo -ne "\n${C_CYAN}是否立即执行首次 IP 质量检测并建立初始存档? (Y/n): ${C_RESET}"
-    read -r first_run_ans
-    first_run_ans="${first_run_ans:-y}"
-    if [[ "$first_run_ans" =~ ^[yY] ]]; then
-        echo -e "\n${C_CYAN}正在启动首次检测...${C_RESET}\n"
-        bash "$INSTALL_DIR/ipqa.sh" --check
+    # 定时任务配置询问 (交互式，仅初次安装)
+    if [[ "$NON_INTERACTIVE" == "false" ]]; then
+        echo -ne "\n${C_CYAN}是否立即开启每 6 小时自动检测一次并归档? (Y/n): ${C_RESET}"
+        read -r setup_cron_ans
+        setup_cron_ans="${setup_cron_ans:-y}"
+        if [[ "$setup_cron_ans" =~ ^[yY] ]]; then
+            CRON_BIN="$(command -v ipqa 2>/dev/null || echo "$INSTALL_DIR/ipqa.sh")"
+            existing=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
+            {
+                [[ -n "$existing" ]] && echo "$existing"
+                echo "# IPQA AUTO CHECK - DO NOT EDIT MANUALLY"
+                echo "0 */6 * * * $CRON_BIN --cron >> $INSTALL_DIR/logs/ipqa.log 2>&1"
+            } | crontab -
+            echo -e "${C_GREEN}✔ 已为您激活每 6 小时定时检测 (Cron: 0 */6 * * *)${C_RESET}"
+        fi
+
+        echo -ne "\n${C_CYAN}是否立即执行首次 IP 质量检测并建立初始存档? (Y/n): ${C_RESET}"
+        read -r first_run_ans
+        first_run_ans="${first_run_ans:-y}"
+        if [[ "$first_run_ans" =~ ^[yY] ]]; then
+            echo -e "\n${C_CYAN}正在启动首次检测...${C_RESET}\n"
+            bash "$INSTALL_DIR/ipqa.sh" --check
+        fi
     fi
 fi
 
@@ -310,4 +332,5 @@ echo -e "\n${C_BOLD}使用小贴士:${C_RESET}"
 echo -e "  • 启动终端图形界面:  ${C_CYAN}ipqa${C_RESET}"
 echo -e "  • 立即执行一次检测:  ${C_CYAN}ipqa --check${C_RESET}"
 echo -e "  • 查看当前运行状态:  ${C_CYAN}ipqa --status${C_RESET}"
+echo -e "  • 在线升级主程序:    ${C_CYAN}ipqa --update${C_RESET}"
 echo -e "  • 帮助信息:          ${C_CYAN}ipqa --help${C_RESET}\n"

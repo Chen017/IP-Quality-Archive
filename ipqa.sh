@@ -1044,15 +1044,15 @@ render_media_unlock_table() {
             mtype=$(jq -r ".Media.$svc.Type // \"\"" "$f")
 
             if [[ "$status" =~ (解锁|Yes|Native) ]]; then
-                if [[ "$mtype" =~ (DNS|Proxy) ]]; then
-                    printf "  %b   " "$SYM_DOT_ORANGE"
+                if [[ "$mtype" =~ (DNS|ViaDNS|Proxy|代理解锁) ]]; then
+                    printf "  %b   " "$SYM_DOT_YELLOW"
                 else
                     printf "  %b   " "$SYM_DOT_GREEN"
                 fi
                 success_in_row=$((success_in_row + 1))
-            elif [[ "$status" =~ (仅自制|Originals Only) ]]; then
+            elif [[ "$status" =~ (仅自制|Originals|NF\.Only|仅网页|仅APP|WebOnly|APPOnly|待支持|Pending) ]]; then
                 printf "  %b   " "$SYM_DOT_YELLOW"
-            elif [[ "$status" =~ (失败|屏蔽|No|Blocked) ]]; then
+            elif [[ "$status" =~ (失败|屏蔽|No|Blocked|Block|Failed|中国|China|禁会员|NoPrem) ]]; then
                 printf "  %b   " "$SYM_DOT_RED"
             else
                 printf "  %b   " "$SYM_DOT_GRAY"
@@ -1114,7 +1114,7 @@ show_media_unlock() {
         render_media_unlock_table "$V6_DIR" "IPv6"
     fi
 
-    echo -e "图例说明: ${SYM_DOT_GREEN} 原生解锁  ${SYM_DOT_ORANGE} DNS/代理解锁  ${SYM_DOT_YELLOW} 仅自制剧  ${SYM_DOT_RED} 失败/屏蔽  ${SYM_DOT_GRAY} 未检测\n"
+    echo -e "图例说明: ${SYM_DOT_GREEN} 原生解锁  ${SYM_DOT_YELLOW} DNS解锁 / 仅自制剧  ${SYM_DOT_RED} 失败/屏蔽  ${SYM_DOT_GRAY} 未检测\n"
     read -r -p "按回车键返回主菜单..."
 }
 
@@ -1431,27 +1431,53 @@ render_single_archive_card() {
     done
     echo -e "$factor_line"
 
-    # 流媒体解锁
+    # 流媒体解锁 (支持绿色原生解锁、黄色DNS解锁/仅自制剧、红色屏蔽失败)
     echo -e "  ${C_GRAY}── 🎬 流媒体与 AI 解锁 ─────────────────────────────────────────────${C_RESET}"
     local media_list=("Youtube" "Netflix" "DisneyPlus" "TikTok" "ChatGPT" "Reddit")
     local media_names=("YouTube" "Netflix" "Disney+" "TikTok" "ChatGPT" "Reddit")
     for ((m_i=0; m_i<${#media_list[@]}; m_i++)); do
         local m_key="${media_list[$m_i]}"
         local m_name="${media_names[$m_i]}"
-        local st reg
+        local st reg m_type
         st=$(jq -r ".Media.$m_key.Status // \"未知\"" "$f" 2>/dev/null)
         reg=$(jq -r ".Media.$m_key.Region // \"\"" "$f" 2>/dev/null)
+        m_type=$(jq -r ".Media.$m_key.Type // \"\"" "$f" 2>/dev/null)
         [[ "$reg" == "null" ]] && reg=""
+        [[ "$m_type" == "null" ]] && m_type=""
 
-        local st_badge
+        local st_badge=""
         if [[ "$st" =~ (解锁|Yes|Native) ]]; then
-            st_badge="${C_GREEN}✓ 解锁${C_RESET}"
+            if [[ "$m_type" =~ (DNS|ViaDNS|代理解锁) ]]; then
+                # DNS 分流解锁：黄色高亮
+                st_badge="${C_YELLOW}⚡ DNS解锁${C_RESET}"
+                [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
+            else
+                # 原生解锁：绿色高亮
+                st_badge="${C_GREEN}✓ 解锁${C_RESET}"
+                [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
+            fi
+        elif [[ "$st" =~ (仅自制|Originals|NF\.Only) ]]; then
+            # 仅自制剧：黄色高亮
+            if [[ "$m_type" =~ (DNS|ViaDNS) ]]; then
+                st_badge="${C_YELLOW}⚠️ 仅自制剧 (DNS)${C_RESET}"
+            else
+                st_badge="${C_YELLOW}⚠️ 仅自制剧${C_RESET}"
+            fi
             [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
-        elif [[ "$st" =~ (仅自制|Originals Only) ]]; then
-            st_badge="${C_YELLOW}⚠️ 仅自制剧${C_RESET}"
+        elif [[ "$st" =~ (仅网页|WebOnly) ]]; then
+            st_badge="${C_YELLOW}⚠️ 仅网页${C_RESET}"
             [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
-        elif [[ "$st" =~ (失败|屏蔽|No|Blocked) ]]; then
+        elif [[ "$st" =~ (仅APP|APPOnly) ]]; then
+            st_badge="${C_YELLOW}⚠️ 仅APP${C_RESET}"
+            [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
+        elif [[ "$st" =~ (待支持|Pending) ]]; then
+            st_badge="${C_YELLOW}⏳ 待支持${C_RESET}"
+        elif [[ "$st" =~ (失败|屏蔽|No|Blocked|Block|Failed) ]]; then
             st_badge="${C_RED}✗ 屏蔽/失败${C_RESET}"
+        elif [[ "$st" =~ (中国|China) ]]; then
+            st_badge="${C_RED}✗ 中国区受限${C_RESET}"
+        elif [[ "$st" =~ (禁会员|NoPrem) ]]; then
+            st_badge="${C_RED}✗ 禁会员${C_RESET}"
         else
             st_badge="${C_GRAY}$st${C_RESET}"
         fi

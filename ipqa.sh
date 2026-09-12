@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IP Quality Archive (IPQA) - IP 质量存档监测系统
-# Version: 1.0.0
 # Description: 基于 IPQuality 的 IP 质量历史存档与终端可视化监测工具
 # GitHub: https://github.com/xykt/IPQuality
 # ==============================================================================
 
 # 基础环境与路径配置
-IPQA_VERSION="v1.0.0"
 IPQA_HOME="${IPQA_DIR:-$HOME/.ipqa}"
 CONFIG_FILE="$IPQA_HOME/config.sh"
 DATA_DIR="$IPQA_HOME/data"
@@ -206,6 +204,9 @@ patch_ip_script() {
 
     # 3. 修复上游 ip.sh 在 Check_DNS_IP 中因未解析到 IP 将原生解锁误判为 DNS 解锁的 bug
     sed -i -e '/function Check_DNS_IP/,/function Check_DNS_1/{ /else/{ n; s/echo 0/echo 1/; } }' "$IP_SCRIPT" 2>/dev/null || true
+
+    # 4. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
+    sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$IP_SCRIPT" 2>/dev/null || true
 }
 
 ensure_ip_script() {
@@ -234,19 +235,23 @@ ensure_ip_script() {
     return 0
 }
 
-# 每天自动同步最新 IPQA 主程序及 IPQuality 检测核心 (静默执行)
-auto_update_core_if_needed() {
+# 每 7 天自动静默更新 IPQA 脚本及 IPQuality 检测核心 (静默执行)
+auto_update_if_needed() {
     local quiet="${1:-true}"
-    local stamp_file="$IPQA_HOME/.last_core_update"
+    local stamp_file="$IPQA_HOME/.last_auto_update"
+    if [[ ! -f "$stamp_file" && -f "$IPQA_HOME/.last_core_update" ]]; then
+        mv "$IPQA_HOME/.last_core_update" "$stamp_file" 2>/dev/null || true
+    fi
+
     local now_sec
     now_sec=$(date +%s)
     local last_update=0
     [[ -f "$stamp_file" ]] && last_update=$(cat "$stamp_file" 2>/dev/null || echo 0)
 
-    # 上次更新距离现在超过 24 小时 (86400 秒) 或核心文件不存在时自动同步
-    if [[ ! -f "$IP_SCRIPT" ]] || (( now_sec - last_update >= 86400 )); then
-        [[ "$quiet" == "false" ]] && echo -e "${C_CYAN}🔄 距上次同步已超 24 小时，正在自动拉取最新主程序与检测核心...${C_RESET}"
-        log_msg "INFO" "触发主程序与检测核心每日自动同步"
+    # 上次更新距离现在超过 7 天 (7 * 86400 = 604800 秒) 或核心文件不存在时自动静默更新
+    if [[ ! -f "$IP_SCRIPT" ]] || (( now_sec - last_update >= 604800 )); then
+        [[ "$quiet" == "false" ]] && echo -e "${C_CYAN}🔄 距上次更新已超 7 天，正在静默更新脚本与检测核心...${C_RESET}"
+        log_msg "INFO" "触发 7 天周期自动静默更新脚本与检测核心"
 
         # 1. 自动同步 IPQuality 检测核心 (ip.sh)
         local tmp_ip="$IPQA_HOME/ip.sh.tmp"
@@ -257,31 +262,31 @@ auto_update_core_if_needed() {
             patch_ip_script
             local new_ver
             new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
-            log_msg "INFO" "自动更新核心成功，版本: ${new_ver:-未知}"
+            log_msg "INFO" "7天自动更新检测核心成功，版本: ${new_ver:-未知}"
         else
             rm -f "$tmp_ip"
-            log_msg "WARN" "自动更新检测核心网络超时，继续使用本地核心"
+            log_msg "WARN" "7天自动更新检测核心网络超时，继续使用本地核心"
         fi
 
-        # 2. 自动同步 IPQA 主程序 (ipqa.sh)
+        # 2. 自动同步 IPQA 脚本 (ipqa.sh)
         local tmp_ipqa="$IPQA_HOME/ipqa.sh.tmp"
         if curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh -o "$tmp_ipqa" 2>/dev/null; then
             if bash -n "$tmp_ipqa" 2>/dev/null; then
                 mv "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"
                 sed -i 's/\r$//' "$IPQA_HOME/ipqa.sh" 2>/dev/null || true
                 chmod +x "$IPQA_HOME/ipqa.sh"
-                log_msg "INFO" "自动更新 IPQA 主程序成功"
+                log_msg "INFO" "7天自动静默更新 IPQA 脚本成功"
             else
                 rm -f "$tmp_ipqa"
-                log_msg "WARN" "自动更新 IPQA 脚本语法校验失败，保留当前版本"
+                log_msg "WARN" "自动更新 IPQA 脚本语法校验失败，保留当前脚本"
             fi
         else
             rm -f "$tmp_ipqa"
-            log_msg "WARN" "自动更新 IPQA 主程序网络超时，继续使用当前版本"
+            log_msg "WARN" "自动更新 IPQA 脚本网络超时，继续使用当前脚本"
         fi
 
         echo "$now_sec" > "$stamp_file"
-        [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPQA 主程序与检测核心已自动同步至最新${C_RESET}\n"
+        [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPQA 脚本与检测核心已完成自动静默更新${C_RESET}\n"
     fi
 }
 
@@ -335,6 +340,21 @@ fmt_short_time() {
     fi
 }
 
+# 清理地区字符串中的 ANSI 乱码与异常格式 (例如 1mCN2m, \x1b[31m[CN]\x1b[32m 等)
+clean_region_str() {
+    local raw="$1"
+    [[ -z "$raw" || "$raw" == "null" || "$raw" == "--" ]] && echo "--" && return
+    local cleaned
+    cleaned=$(echo "$raw" | sed -r -e 's/\x1b\[?[0-9;]*m?//g' -e 's/\\033\[?[0-9;]*m?//g' -e 's/[0-9]+m//g')
+    if [[ "$cleaned" =~ ([A-Za-z]{2}) ]]; then
+        echo "${BASH_REMATCH[1]^^}"
+    else
+        cleaned=$(echo "$cleaned" | tr -d '[] ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        [[ -z "$cleaned" || "$cleaned" == "null" ]] && cleaned="--"
+        echo "$cleaned"
+    fi
+}
+
 # ==============================================================================
 # 告警与变化对比引擎
 # ==============================================================================
@@ -375,6 +395,10 @@ compare_and_alert() {
         local old_reg new_reg
         old_reg=$(jq -r ".Media.$svc.Region // empty" "$prev_file")
         new_reg=$(jq -r ".Media.$svc.Region // empty" "$new_file")
+        old_reg=$(clean_region_str "$old_reg")
+        new_reg=$(clean_region_str "$new_reg")
+        [[ "$old_reg" == "--" ]] && old_reg=""
+        [[ "$new_reg" == "--" ]] && new_reg=""
         if [[ -n "$old_reg" && -n "$new_reg" && "$old_reg" != "$new_reg" ]]; then
             add_alert "WARNING" "$svc 地区从 [$old_reg] 变为 [$new_reg]" "$ip_ver"
         fi
@@ -384,6 +408,8 @@ compare_and_alert() {
     if [[ -n "$EXPECTED_YOUTUBE_REGION" ]]; then
         local yt_reg
         yt_reg=$(jq -r ".Media.Youtube.Region // empty" "$new_file")
+        yt_reg=$(clean_region_str "$yt_reg")
+        [[ "$yt_reg" == "--" ]] && yt_reg=""
         if [[ -n "$yt_reg" && "$yt_reg" != "$EXPECTED_YOUTUBE_REGION" ]]; then
             add_alert "WARNING" "YouTube 地区 [$yt_reg] 不符合预期 [$EXPECTED_YOUTUBE_REGION]" "$ip_ver"
         fi
@@ -391,6 +417,8 @@ compare_and_alert() {
     if [[ -n "$EXPECTED_NETFLIX_REGION" ]]; then
         local nf_reg
         nf_reg=$(jq -r ".Media.Netflix.Region // empty" "$new_file")
+        nf_reg=$(clean_region_str "$nf_reg")
+        [[ "$nf_reg" == "--" ]] && nf_reg=""
         if [[ -n "$nf_reg" && "$nf_reg" != "$EXPECTED_NETFLIX_REGION" ]]; then
             add_alert "WARNING" "Netflix 地区 [$nf_reg] 不符合预期 [$EXPECTED_NETFLIX_REGION]" "$ip_ver"
         fi
@@ -495,7 +523,7 @@ run_check() {
     local start_sec
     start_sec=$(date +%s)
     ensure_ip_script || return 1
-    auto_update_core_if_needed "$quiet"
+    auto_update_if_needed "$quiet"
     load_config
 
     local ts
@@ -1252,7 +1280,7 @@ render_media_unlock_table() {
         for f in "${files[@]}"; do
             local reg
             reg=$(jq -r ".Media.$svc.Region // \"--\"" "$f")
-            [[ -z "$reg" || "$reg" == "null" ]] && reg="--"
+            reg=$(clean_region_str "$reg")
             regions+=("$reg")
         done
 
@@ -1672,6 +1700,8 @@ render_single_archive_card() {
         [[ -z "$m_key" ]] && continue
         [[ "$reg" == "null" ]] && reg=""
         [[ "$m_type" == "null" ]] && m_type=""
+        reg=$(clean_region_str "$reg")
+        [[ "$reg" == "--" ]] && reg=""
 
         local st_badge=""
         if [[ "$st" =~ (解锁|Yes|Native) ]]; then
@@ -2068,7 +2098,8 @@ update_ipqa() {
         sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
         chmod +x "$IP_SCRIPT"
         patch_ip_script
-        date +%s > "$IPQA_HOME/.last_core_update" 2>/dev/null || true
+        date +%s > "$IPQA_HOME/.last_auto_update" 2>/dev/null || true
+        rm -f "$IPQA_HOME/.last_core_update" 2>/dev/null || true
         echo -e "${C_GREEN}✔ IPQuality 检测核心已成功同步至最新版本！${C_RESET}"
     else
         rm -f "$tmp_core"
@@ -2170,9 +2201,9 @@ render_panel() {
     if [[ -f "$IP_SCRIPT" ]]; then
         core_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
     fi
-    local ver_display="${IPQA_VERSION}"
+    local ver_display=""
     if [[ -n "$core_ver" ]]; then
-        ver_display="${IPQA_VERSION} (Core: ${core_ver})"
+        ver_display="(Core: ${core_ver})"
     fi
 
     # 打印顶部 Panel
@@ -2185,7 +2216,7 @@ render_panel() {
     echo -e "  ${C_CYAN}⏰ 上次检测:${C_RESET} ${last_check}"
     echo -e "  ${C_CYAN}📦 历史存档:${C_RESET} IPv4: ${C_GREEN}${count_v4}${C_RESET} 份  ${C_GRAY}│${C_RESET}  IPv6: ${C_GREEN}${count_v6}${C_RESET} 份"
     echo -e "  ${C_CYAN}📅 时间跨度:${C_RESET} ${time_span}"
-    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored} ${C_GRAY}(每天自动同步主程序与核心)${C_RESET}"
+    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored} ${C_GRAY}(每 7 天静默自动更新脚本与核心)${C_RESET}"
     echo ""
     echo -e "${C_GRAY}── ${C_YELLOW}⚠️  最近风险变化提醒${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
 
@@ -2222,6 +2253,8 @@ render_panel() {
 main_loop() {
     check_dependencies
     load_config
+    # 每 7 天自动静默更新脚本与检测核心 (后台运行，不阻塞界面交互)
+    ( auto_update_if_needed true >/dev/null 2>&1 & )
 
     while true; do
         render_panel
@@ -2272,7 +2305,7 @@ case "$1" in
         v4_cnt=$(count_json_files "$V4_DIR")
         v6_cnt=$(count_json_files "$V6_DIR")
         latest=$(get_latest_archive "$V4_DIR")
-        echo "IPQA Status ($IPQA_VERSION)"
+        echo "IPQA Status"
         echo "Archives: v4: $v4_cnt, v6: $v6_cnt"
         if [[ -n "$latest" ]]; then
             echo "Latest IP: $(jq -r '.Head.IP' "$latest")"
@@ -2286,7 +2319,7 @@ case "$1" in
         uninstall_ipqa
         ;;
     --help|-h)
-        echo "IP Quality Archive (IPQA) $IPQA_VERSION"
+        echo "IP Quality Archive (IPQA)"
         echo "用法: ipqa [选项]"
         echo ""
         echo "选项:"

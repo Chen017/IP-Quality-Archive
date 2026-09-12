@@ -107,6 +107,16 @@ EOF
 # ==============================================================================
 # 工具函数
 # ==============================================================================
+pad_cell() {
+    local text="$1"
+    local target_width="${2:-8}"
+    local w
+    w=$(printf "%s" "$text" | wc -L)
+    local pad=$(( target_width - w ))
+    [[ $pad -lt 0 ]] && pad=0
+    printf "%s%*s" "$text" "$pad" ""
+}
+
 log_msg() {
     local level="$1"
     shift
@@ -335,6 +345,13 @@ compare_and_alert() {
     new_usage=$(jq -r ".Type.Usage.IPinfo // empty" "$new_file")
     if [[ -n "$old_usage" && -n "$new_usage" && "$old_usage" != "$new_usage" ]]; then
         add_alert "WARNING" "IPinfo 使用类型属性变更为 [$new_usage] (原: $old_usage)" "$ip_ver"
+    fi
+
+    local old_comp new_comp
+    old_comp=$(jq -r ".Type.Company.IPinfo // empty" "$prev_file")
+    new_comp=$(jq -r ".Type.Company.IPinfo // empty" "$new_file")
+    if [[ -n "$old_comp" && -n "$new_comp" && "$old_comp" != "$new_comp" ]]; then
+        add_alert "WARNING" "IPinfo 公司类型属性变更为 [$new_comp] (原: $old_comp)" "$ip_ver"
     fi
 
     # 5. 对比风险因子新增 (Proxy, Tor, VPN, Server, Abuser, Robot)
@@ -571,48 +588,74 @@ render_ip_type_table() {
         dates+=("$(fmt_short_date "$(basename "$f" .json)")")
     done
 
-    # 打印表头
-    printf "  %-11s" "数据库"
+    # 打印表头 (14 字符对齐)
+    echo -n "  数据库 / 维度 "
     for d in "${dates[@]}"; do
         printf "│ %-8s " "$d"
     done
     printf "│ %-10s\n" "历史稳定性"
     
-    local divider_len=$(( 13 + ${#dates[@]} * 11 + 14 ))
+    local divider_len=$(( 15 + ${#dates[@]} * 11 + 14 ))
     echo -ne "  "
     draw_divider "$divider_len"
 
-    # 数据库键值清单
-    local row_keys=("IPinfo" "ipregistry" "ipapi" "AbuseIPDB" "IP2LOCATION" "Info_Type")
-    local row_names=("IPinfo" "ipregistry" "ipapi" "AbuseIPDB" "IP2LOCATION" "原生/广播")
+    # 数据库键值清单 (包含使用类型 Usage、公司类型 Company 与网络属性)
+    local row_keys=(
+        "Usage.IPinfo"
+        "Usage.ipregistry"
+        "Usage.ipapi"
+        "Usage.AbuseIPDB"
+        "Usage.IP2LOCATION"
+        "Company.IPinfo"
+        "Company.ipregistry"
+        "Company.ipapi"
+        "Info_Type"
+    )
+    local row_names=(
+        "IPinfo (使用)"
+        "ipreg  (使用)"
+        "ipapi  (使用)"
+        "Abuse  (使用)"
+        "IP2L   (使用)"
+        "IPinfo (公司)"
+        "ipreg  (公司)"
+        "ipapi  (公司)"
+        "原生/广播    "
+    )
 
     for idx in "${!row_keys[@]}"; do
         local rk="${row_keys[$idx]}"
         local rname="${row_names[$idx]}"
-        printf "  %-10s " "$rname"
+        echo -n "  $rname "
 
         local vals=()
         for f in "${files[@]}"; do
             local val=""
             if [[ "$rk" == "Info_Type" ]]; then
-                val=$(jq -r '.Info.Type // "null"' "$f" | sed 's/Geo-consistent/原生IP/;s/Geo-discrepant/广播IP/')
-            else
-                val=$(jq -r ".Type.Usage.$rk // \"null\"" "$f")
+                val=$(jq -r '.Info.Type // "null"' "$f" 2>/dev/null | sed 's/Geo-consistent/原生IP/;s/Geo-discrepant/广播IP/')
+            elif [[ "$rk" =~ ^Usage\.(.*) ]]; then
+                local sub_k="${BASH_REMATCH[1]}"
+                val=$(jq -r ".Type.Usage.$sub_k // \"null\"" "$f" 2>/dev/null)
+            elif [[ "$rk" =~ ^Company\.(.*) ]]; then
+                local sub_k="${BASH_REMATCH[1]}"
+                val=$(jq -r ".Type.Company.$sub_k // \"null\"" "$f" 2>/dev/null)
             fi
             [[ -z "$val" || "$val" == "null" ]] && val="无数据"
             vals+=("$val")
             
-            # 着色渲染 (8字符宽度截断或展示)
+            # 着色渲染 (6字符截断并用 pad_cell 对齐)
             local display_val="${val:0:6}"
+            local cell_color="$C_GRAY"
             if [[ "$val" =~ (ISP|家宽|Line ISP|原生IP) ]]; then
-                printf "│ ${C_GREEN}%-7s${C_RESET} " "$display_val"
+                cell_color="$C_GREEN"
             elif [[ "$val" =~ (Data Center|Hosting|机房|广播IP|Transit) ]]; then
-                printf "│ ${C_RED}%-7s${C_RESET} " "$display_val"
+                cell_color="$C_RED"
             elif [[ "$val" =~ (Business|商业|Corporate) ]]; then
-                printf "│ ${C_YELLOW}%-7s${C_RESET} " "$display_val"
-            else
-                printf "│ ${C_GRAY}%-7s${C_RESET} " "$display_val"
+                cell_color="$C_YELLOW"
             fi
+            local padded_val
+            padded_val=$(pad_cell "$display_val" 8)
+            printf "│ ${cell_color}%s${C_RESET} " "$padded_val"
         done
 
         # 计算稳定性
@@ -1204,7 +1247,9 @@ render_single_archive_card() {
 
     ip_type=$(jq -r '.Info.Type // "--"' "$f" 2>/dev/null | sed 's/Geo-consistent/原生IP/;s/Geo-discrepant/广播IP/')
     usage_ipinfo=$(jq -r '.Type.Usage.IPinfo // "--"' "$f" 2>/dev/null)
-    usage_ip2l=$(jq -r '.Type.Usage.IP2LOCATION // "--"' "$f" 2>/dev/null)
+    comp_ipinfo=$(jq -r '.Type.Company.IPinfo // "--"' "$f" 2>/dev/null)
+    usage_ipreg=$(jq -r '.Type.Usage.ipregistry // "--"' "$f" 2>/dev/null)
+    comp_ipreg=$(jq -r '.Type.Company.ipregistry // "--"' "$f" 2>/dev/null)
 
     local proto_color="$C_GREEN"
     [[ "$proto_tag" == "IPv6" ]] && proto_color="$C_CYAN"
@@ -1213,7 +1258,7 @@ render_single_archive_card() {
     echo -e "  ${C_CYAN}📡 节点 IP  :${C_RESET} ${C_BOLD}${ip}${C_RESET} ($proto_tag)"
     echo -e "  ${C_CYAN}🏢 组织/ASN :${C_RESET} ${asn} (${org})"
     echo -e "  ${C_CYAN}📍 地理位置 :${C_RESET} ${loc}"
-    echo -e "  ${C_CYAN}🏷️ 属性类型 :${C_RESET} ${C_GREEN}${ip_type}${C_RESET} │ IPinfo: ${usage_ipinfo} │ IP2Location: ${usage_ip2l}"
+    echo -e "  ${C_CYAN}🏷️ 属性类型 :${C_RESET} ${C_GREEN}${ip_type}${C_RESET} │ IPinfo: 使用[$usage_ipinfo] 公司[$comp_ipinfo] │ ipreg: 使用[$usage_ipreg] 公司[$comp_ipreg]"
 
     # 风控评分
     echo -e "  ${C_GRAY}── 📊 权威风控评分 ─────────────────────────────────────────────────${C_RESET}"

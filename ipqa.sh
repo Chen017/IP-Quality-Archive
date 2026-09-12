@@ -56,9 +56,18 @@ SYM_WARN="${C_YELLOW}⚠️${C_RESET}"
 
 draw_divider() {
     local len="${1:-60}"
-    local line=""
-    for ((d_i=0; d_i<len; d_i++)); do line+="─"; done
+    local line
+    line=$(printf '─%.0s' $(seq 1 "$len" 2>/dev/null) 2>/dev/null)
+    if [[ -z "$line" ]]; then
+        for ((d_i=0; d_i<len; d_i++)); do line+="─"; done
+    fi
     echo -e "${C_GRAY}${line}${C_RESET}"
+}
+
+count_json_files() {
+    local dir="$1"
+    [[ -d "$dir" ]] || { echo 0; return; }
+    find "$dir" -maxdepth 1 -name '*.json' 2>/dev/null | wc -l
 }
 
 print_module_header() {
@@ -288,11 +297,9 @@ validate_json() {
 # 获取最新一份有效 JSON
 get_latest_archive() {
     local dir="$1"
-    if [[ ! -d "$dir" ]]; then
-        return 1
-    fi
+    [[ ! -d "$dir" ]] && return 1
     local latest
-    latest=$(ls -1r "$dir"/*.json 2>/dev/null | head -n 1)
+    latest=$(find "$dir" -maxdepth 1 -name '*.json' 2>/dev/null | sort -r | head -n 1)
     if [[ -n "$latest" && -f "$latest" ]]; then
         echo "$latest"
         return 0
@@ -344,7 +351,7 @@ add_alert() {
 get_recent_alerts() {
     local count="${1:-5}"
     if [[ -f "$ALERT_LOG" ]]; then
-        tail -n "$count" "$ALERT_LOG" 2>/dev/null
+        sort -t'|' -k1 "$ALERT_LOG" 2>/dev/null | tail -n "$count"
     fi
 }
 
@@ -355,7 +362,7 @@ compare_and_alert() {
 
     # 获取前一份有效存档文件（排除当前 new_file）
     local prev_file
-    prev_file=$(ls -1r "$dir"/*.json 2>/dev/null | grep -v "$(basename "$new_file")" | head -n 1)
+    prev_file=$(find "$dir" -maxdepth 1 -name '*.json' 2>/dev/null | sort -r | grep -v "$(basename "$new_file")" | head -n 1)
 
     if [[ -z "$prev_file" || ! -f "$prev_file" ]]; then
         add_alert "INFO" "首次完成数据存档监测" "$ip_ver"
@@ -485,6 +492,8 @@ compare_and_alert() {
 # ==============================================================================
 run_check() {
     local quiet="${1:-false}"
+    local start_sec
+    start_sec=$(date +%s)
     ensure_ip_script || return 1
     auto_update_core_if_needed "$quiet"
     load_config
@@ -561,21 +570,22 @@ run_check() {
     # 清理超额历史文件
     if [[ "$KEEP_MAX_ARCHIVES" -gt 0 ]]; then
         local count_v4 count_v6
-        count_v4=$(ls -1 "$V4_DIR"/*.json 2>/dev/null | wc -l)
+        count_v4=$(count_json_files "$V4_DIR")
         if (( count_v4 > KEEP_MAX_ARCHIVES )); then
             local remove_count=$((count_v4 - KEEP_MAX_ARCHIVES))
-            # shellcheck disable=SC2012
-            ls -1t "$V4_DIR"/*.json | tail -n "$remove_count" | xargs rm -f
+            find "$V4_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort | head -n "$remove_count" | xargs rm -f 2>/dev/null
         fi
-        count_v6=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+        count_v6=$(count_json_files "$V6_DIR")
         if (( count_v6 > KEEP_MAX_ARCHIVES )); then
             local remove_count=$((count_v6 - KEEP_MAX_ARCHIVES))
-            # shellcheck disable=SC2012
-            ls -1t "$V6_DIR"/*.json | tail -n "$remove_count" | xargs rm -f
+            find "$V6_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort | head -n "$remove_count" | xargs rm -f 2>/dev/null
         fi
     fi
 
-    [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}${C_BOLD}检测完成！${C_RESET}\n"
+    local end_sec
+    end_sec=$(date +%s)
+    local elapsed=$((end_sec - start_sec))
+    [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}${C_BOLD}检测完成！${C_RESET}${C_GRAY}(耗时 ${elapsed} 秒)${C_RESET}\n"
 }
 
 # ==============================================================================
@@ -815,7 +825,7 @@ show_ip_type() {
     render_ip_type_table "$V4_DIR" "IPv4"
 
     local v6_cnt
-    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    v6_cnt=$(count_json_files "$V6_DIR")
     if (( v6_cnt > 0 )); then
         echo ""
         render_ip_type_table "$V6_DIR" "IPv6"
@@ -918,7 +928,7 @@ show_risk_score() {
     render_risk_score_chart "$V4_DIR" "IPv4"
 
     local v6_cnt
-    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    v6_cnt=$(count_json_files "$V6_DIR")
     if (( v6_cnt > 0 )); then
         echo ""
         render_risk_score_chart "$V6_DIR" "IPv6"
@@ -1052,7 +1062,7 @@ show_risk_factor() {
 
     # 2. IPv6 (如果有) 风险因子矩阵与全量历史
     local v6_cnt
-    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    v6_cnt=$(count_json_files "$V6_DIR")
     if (( v6_cnt > 0 )); then
         echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}\n"
         render_risk_factor_matrix "$V6_DIR" "IPv6"
@@ -1181,7 +1191,7 @@ show_media_unlock() {
     render_media_unlock_table "$V4_DIR" "IPv4"
 
     local v6_cnt
-    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    v6_cnt=$(count_json_files "$V6_DIR")
     if (( v6_cnt > 0 )); then
         render_media_unlock_table "$V6_DIR" "IPv6"
     fi
@@ -1278,7 +1288,7 @@ show_mail_and_blacklist() {
     render_mail_and_blacklist "$V4_DIR" "IPv4"
 
     local v6_cnt
-    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    v6_cnt=$(count_json_files "$V6_DIR")
     if (( v6_cnt > 0 )); then
         render_mail_and_blacklist "$V6_DIR" "IPv6"
     fi
@@ -1404,19 +1414,24 @@ render_single_archive_card() {
     local proto_tag="$2"
     [[ ! -f "$f" ]] && return
 
-    local ip asn org city country ip_type usage_ipinfo usage_ip2l
-    ip=$(jq -r '.Head.IP // "未知"' "$f" 2>/dev/null)
-    asn=$(jq -r '.Info.ASN // "--"' "$f" 2>/dev/null)
+    local ip asn org city country ip_type
+    IFS=$'\t' read -r ip asn org city country ip_type < <(
+        jq -r '[
+            (.Head.IP // "未知"),
+            (.Info.ASN // "--"),
+            (.Info.Organization // "--"),
+            (.Info.City.Name // ""),
+            (.Info.Region.Name // ""),
+            (.Info.Type // "--")
+        ] | @tsv' "$f" 2>/dev/null
+    )
     [[ "$asn" =~ ^[0-9]+$ ]] && asn="AS$asn"
-    org=$(jq -r '.Info.Organization // "--"' "$f" 2>/dev/null)
-    city=$(jq -r '.Info.City.Name // ""' "$f" 2>/dev/null)
-    country=$(jq -r '.Info.Region.Name // ""' "$f" 2>/dev/null)
     [[ "$city" == "null" ]] && city=""
     [[ "$country" == "null" ]] && country=""
     local loc="未知"
     if [[ -n "$city" && -n "$country" ]]; then loc="$city, $country"; elif [[ -n "$country" ]]; then loc="$country"; elif [[ -n "$city" ]]; then loc="$city"; fi
 
-    ip_type=$(jq -r '.Info.Type // "--"' "$f" 2>/dev/null | sed 's/Geo-consistent/原生IP/;s/Geo-discrepant/广播IP/')
+    ip_type=$(echo "$ip_type" | sed 's/Geo-consistent/原生IP/;s/Geo-discrepant/广播IP/')
 
     local proto_color="$C_GREEN"
     [[ "$proto_tag" == "IPv6" ]] && proto_color="$C_CYAN"
@@ -1432,26 +1447,28 @@ render_single_archive_card() {
     fi
 
     # IP 类型属性 (展示 IPinfo, ipregistry, ipapi, IP2Location, AbuseIPDB 5大检测商)
-    local all_type_dbs=("IPinfo" "ipregistry" "ipapi" "IP2Location" "AbuseIPDB")
     local active_type_dbs=()
     local type_usage_vals=()
     local type_comp_vals=()
     local type_col_widths=()
     local has_any_comp=false
 
-    for tdb in "${all_type_dbs[@]}"; do
-        local u="" c=""
-        if [[ "$tdb" == "IP2Location" ]]; then
-            u=$(jq -r '.Type.Usage.IP2LOCATION // .Type.Usage.IP2Location // ""' "$f" 2>/dev/null)
-            c=$(jq -r '.Type.Company.IP2LOCATION // .Type.Company.IP2Location // ""' "$f" 2>/dev/null)
-        else
-            u=$(jq -r ".Type.Usage.$tdb // \"\"" "$f" 2>/dev/null)
-            c=$(jq -r ".Type.Company.$tdb // \"\"" "$f" 2>/dev/null)
-        fi
+    local type_data
+    type_data=$(jq -r '
+        .Type as $t |
+        [
+            ("IPinfo\t" + ($t.Usage.IPinfo // "") + "\t" + ($t.Company.IPinfo // "")),
+            ("ipregistry\t" + ($t.Usage.ipregistry // "") + "\t" + ($t.Company.ipregistry // "")),
+            ("ipapi\t" + ($t.Usage.ipapi // "") + "\t" + ($t.Company.ipapi // "")),
+            ("IP2Location\t" + ($t.Usage.IP2LOCATION // $t.Usage.IP2Location // "") + "\t" + ($t.Company.IP2LOCATION // $t.Company.IP2Location // "")),
+            ("AbuseIPDB\t" + ($t.Usage.AbuseIPDB // "") + "\t" + ($t.Company.AbuseIPDB // ""))
+        ] | .[]
+    ' "$f" 2>/dev/null)
+
+    while IFS=$'\t' read -r tdb u c; do
+        [[ -z "$tdb" ]] && continue
         [[ "$u" == "null" || "$u" == "--" ]] && u=""
         [[ "$c" == "null" || "$c" == "--" ]] && c=""
-
-        # 若使用类型与公司类型均无有效数据则隐藏该检测商列
         if [[ -z "$u" && -z "$c" ]]; then
             continue
         fi
@@ -1464,7 +1481,7 @@ render_single_archive_card() {
         local w=$(( ${#tdb} + 3 ))
         (( w < 12 )) && w=12
         type_col_widths+=("$w")
-    done
+    done <<< "$type_data"
 
     if [[ ${#active_type_dbs[@]} -gt 0 ]]; then
         echo -e "  ${C_GRAY}── 🏷️ IP 类型属性 ──────────────────────────────────────────────────${C_RESET}"
@@ -1497,55 +1514,66 @@ render_single_archive_card() {
 
     # 风控评分 (仅展示具有有效数值评分的数据库，无数据的数据库直接隐藏)
     echo -e "  ${C_GRAY}── 📊 权威风控评分 ─────────────────────────────────────────────────${C_RESET}"
-    local score_dbs=("SCAMALYTICS" "IP2LOCATION" "AbuseIPDB" "IPQS" "ipapi" "DBIP")
     local score_count=0
-    for sdb in "${score_dbs[@]}"; do
-        local sc
-        sc=$(jq -r ".Score.$sdb // \"null\"" "$f" 2>/dev/null)
+    local score_data
+    score_data=$(jq -r '
+        .Score as $s |
+        ["SCAMALYTICS", "IP2LOCATION", "AbuseIPDB", "IPQS", "ipapi", "DBIP"] | map(
+            . as $k | "\($k)\t\($s[$k] // "")"
+        ) | .[]
+    ' "$f" 2>/dev/null)
+    while IFS=$'\t' read -r sdb sc; do
         if [[ "$sc" =~ ^[0-9]+$ ]]; then
             printf "    • %-13s ▏ " "$sdb"
             render_bar "$sc"
             (( score_count++ ))
         fi
-    done
+    done <<< "$score_data"
     if (( score_count == 0 )); then
         echo -e "    ${C_GRAY}• 暂无各权威数据库有效风控评分数据${C_RESET}"
     fi
 
-    # 风险因子
+    # 风险因子 (一次性提取 6 大安全因子检出状态)
     echo -e "  ${C_GRAY}── 🔬 核心安全因子 ─────────────────────────────────────────────────${C_RESET}"
-    local factors=("Proxy" "Tor" "VPN" "Server" "Abuser" "Robot")
     local factor_line="   "
-    for fac in "${factors[@]}"; do
-        local engines=("IP2LOCATION" "ipapi" "ipregistry" "IPQS" "SCAMALYTICS" "ipdata" "IPinfo" "IPWHOIS" "DBIP")
-        local is_detected=false
-        for eng in "${engines[@]}"; do
-            local val
-            val=$(jq -r "if .Factor[\"$fac\"][\"$eng\"] != null then .Factor[\"$fac\"][\"$eng\"] else .Factor[\"$fac\"][\"WHOIS\"] end" "$f" 2>/dev/null)
-            if [[ "$val" == "true" ]]; then
-                is_detected=true
-                break
-            fi
-        done
+    local factor_data
+    factor_data=$(jq -r '
+        .Factor as $f |
+        ["Proxy", "Tor", "VPN", "Server", "Abuser", "Robot"] | map(
+            . as $fac |
+            "\($fac)\t\([ "IP2LOCATION", "ipapi", "ipregistry", "IPQS", "SCAMALYTICS", "ipdata", "IPinfo", "IPWHOIS", "DBIP", "WHOIS" ] | any(
+                . as $eng |
+                ($f[$fac][$eng] // false) == true or ($f[$fac][$eng] // false) == "true"
+            ))"
+        ) | .[]
+    ' "$f" 2>/dev/null)
+    while IFS=$'\t' read -r fac is_detected; do
+        [[ -z "$fac" ]] && continue
         if [[ "$is_detected" == "true" ]]; then
             factor_line+=" ${fac}: ${C_RED}● 检出${C_RESET}  "
         else
             factor_line+=" ${fac}: ${C_GREEN}● 正常${C_RESET}  "
         fi
-    done
+    done <<< "$factor_data"
     echo -e "$factor_line"
 
     # 流媒体解锁 (支持绿色原生解锁、黄色DNS解锁/仅自制剧、红色屏蔽失败)
     echo -e "  ${C_GRAY}── 🎬 流媒体与 AI 解锁 ─────────────────────────────────────────────${C_RESET}"
-    local media_list=("Youtube" "Netflix" "DisneyPlus" "TikTok" "ChatGPT" "Reddit")
-    local media_names=("YouTube" "Netflix" "Disney+" "TikTok" "ChatGPT" "Reddit")
-    for ((m_i=0; m_i<${#media_list[@]}; m_i++)); do
-        local m_key="${media_list[$m_i]}"
-        local m_name="${media_names[$m_i]}"
-        local st reg m_type
-        st=$(jq -r ".Media.$m_key.Status // \"未知\"" "$f" 2>/dev/null)
-        reg=$(jq -r ".Media.$m_key.Region // \"\"" "$f" 2>/dev/null)
-        m_type=$(jq -r ".Media.$m_key.Type // \"\"" "$f" 2>/dev/null)
+    local media_data
+    media_data=$(jq -r '
+        .Media as $m |
+        [
+            ("Youtube\tYouTube\t" + ($m.Youtube.Status // "未知") + "\t" + ($m.Youtube.Region // "") + "\t" + ($m.Youtube.Type // "")),
+            ("Netflix\tNetflix\t" + ($m.Netflix.Status // "未知") + "\t" + ($m.Netflix.Region // "") + "\t" + ($m.Netflix.Type // "")),
+            ("DisneyPlus\tDisney+\t" + ($m.DisneyPlus.Status // "未知") + "\t" + ($m.DisneyPlus.Region // "") + "\t" + ($m.DisneyPlus.Type // "")),
+            ("TikTok\tTikTok\t" + ($m.TikTok.Status // "未知") + "\t" + ($m.TikTok.Region // "") + "\t" + ($m.TikTok.Type // "")),
+            ("ChatGPT\tChatGPT\t" + ($m.ChatGPT.Status // "未知") + "\t" + ($m.ChatGPT.Region // "") + "\t" + ($m.ChatGPT.Type // "")),
+            ("Reddit\tReddit\t" + ($m.Reddit.Status // "未知") + "\t" + ($m.Reddit.Region // "") + "\t" + ($m.Reddit.Type // ""))
+        ] | .[]
+    ' "$f" 2>/dev/null)
+
+    while IFS=$'\t' read -r m_key m_name st reg m_type; do
+        [[ -z "$m_key" ]] && continue
         [[ "$reg" == "null" ]] && reg=""
         [[ "$m_type" == "null" ]] && m_type=""
 
@@ -1591,12 +1619,18 @@ render_single_archive_card() {
             [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
         fi
         printf "    • %-10s: %b\n" "$m_name" "$st_badge"
-    done
+    done <<< "$media_data"
 
     # 邮件与 DNS 黑名单
     echo -e "  ${C_GRAY}── 📬 邮件连通与 DNS 黑名单 ─────────────────────────────────────────${C_RESET}"
-    local p25
-    p25=$(jq -r '.Mail.Port25 // "null"' "$f" 2>/dev/null)
+    local p25 bl_total bl_blk
+    IFS=$'\t' read -r p25 bl_total bl_blk < <(
+        jq -r '[
+            (.Mail.Port25 // "null"),
+            (.Mail.DNSBlacklist.Total // 0),
+            (.Mail.DNSBlacklist.Blacklisted // 0)
+        ] | @tsv' "$f" 2>/dev/null
+    )
     if [[ "$p25" == "true" ]]; then
         echo -e "    • 25 端口出站 (Port 25): ${C_GREEN}✓ 开放${C_RESET}"
     elif [[ "$p25" == "false" ]]; then
@@ -1605,9 +1639,6 @@ render_single_archive_card() {
         echo -e "    • 25 端口出站 (Port 25): ${C_GRAY}未检出${C_RESET}"
     fi
 
-    local bl_total bl_blk
-    bl_total=$(jq -r '.Mail.DNSBlacklist.Total // 0' "$f" 2>/dev/null)
-    bl_blk=$(jq -r '.Mail.DNSBlacklist.Blacklisted // 0' "$f" 2>/dev/null)
     if (( bl_blk == 0 )); then
         echo -e "    • DNS 黑名单拦截       : ${C_GREEN}0 / $bl_total 数据库 (全部干净通过)${C_RESET}"
     else
@@ -1679,7 +1710,9 @@ render_archive_snapshot() {
 
         clear
         echo -e "${C_BOLD}文件路径: $target_f${C_RESET}\n"
-        if command -v jq >/dev/null 2>&1; then
+        if command -v less >/dev/null 2>&1; then
+            jq . "$target_f" 2>/dev/null | less -R
+        elif command -v jq >/dev/null 2>&1; then
             jq . "$target_f" | head -n 80
             echo -e "\n${C_GRAY}(展示前 80 行，完整文件位于 $target_f)${C_RESET}"
         else
@@ -1691,9 +1724,6 @@ render_archive_snapshot() {
 }
 
 view_archives() {
-    clear
-    print_module_header "📋 历史存档图表快照查看"
-
     # 收集全部不重复的时间戳 (双栈一体，无需区分选择)
     local all_ts=()
     for f in "$V4_DIR"/*.json; do
@@ -1704,6 +1734,8 @@ view_archives() {
     done
 
     if [[ ${#all_ts[@]} -eq 0 ]]; then
+        clear
+        print_module_header "📋 历史存档图表快照查看"
         echo -e "${C_YELLOW}暂无任何历史存档数据，请先执行一次检测 (选项 8)${C_RESET}\n"
         read -r -p "按回车键返回..."
         return
@@ -1712,48 +1744,73 @@ view_archives() {
     local sorted_ts=()
     mapfile -t sorted_ts < <(printf "%s\n" "${all_ts[@]}" | sort -u -r)
 
-    local max_show=15
-    local show_count=$(( ${#sorted_ts[@]} < max_show ? ${#sorted_ts[@]} : max_show ))
+    local page=0
+    local page_size=15
+    local total_count=${#sorted_ts[@]}
+    local total_pages=$(( (total_count + page_size - 1) / page_size ))
 
-    echo -e "最近检测归档列表 (双栈合并，展示最新 $show_count 次记录):\n"
-    for ((i=0; i<show_count; i++)); do
-        local ts="${sorted_ts[$i]}"
-        local dt
-        dt=$(fmt_timestamp "$ts")
+    while true; do
+        clear
+        print_module_header "📋 历史存档图表快照查看"
 
-        local f_v4="$V4_DIR/${ts}.json"
-        local f_v6
-        f_v6=$(find_matching_v6 "$ts")
+        local start_idx=$((page * page_size))
+        local end_idx=$((start_idx + page_size))
+        (( end_idx > total_count )) && end_idx=$total_count
 
-        local ip_v4="无"
-        local ip_v6="无"
-        local loc_str=""
+        echo -e "最近检测归档列表 (共 ${total_count} 条，第 $((page + 1))/${total_pages} 页):\n"
+        for ((i=start_idx; i<end_idx; i++)); do
+            local ts="${sorted_ts[$i]}"
+            local dt
+            dt=$(fmt_timestamp "$ts")
 
-        if [[ -f "$f_v4" ]]; then
-            ip_v4=$(jq -r '.Head.IP // "未知"' "$f_v4" 2>/dev/null)
-            loc_str=$(jq -r '.Info.Region.Name // ""' "$f_v4" 2>/dev/null)
+            local f_v4="$V4_DIR/${ts}.json"
+            local f_v6
+            f_v6=$(find_matching_v6 "$ts")
+
+            local ip_v4="无"
+            local ip_v6="无"
+            local loc_str=""
+
+            if [[ -f "$f_v4" ]]; then
+                ip_v4=$(jq -r '.Head.IP // "未知"' "$f_v4" 2>/dev/null)
+                loc_str=$(jq -r '.Info.Region.Name // ""' "$f_v4" 2>/dev/null)
+            fi
+            if [[ -n "$f_v6" && -f "$f_v6" ]]; then
+                ip_v6=$(jq -r '.Head.IP // "未知"' "$f_v6" 2>/dev/null)
+                [[ -z "$loc_str" || "$loc_str" == "null" ]] && loc_str=$(jq -r '.Info.Region.Name // ""' "$f_v6" 2>/dev/null)
+            fi
+            [[ "$loc_str" == "null" ]] && loc_str=""
+
+            printf "  ${C_BOLD}[%2d]${C_RESET} %-19s │ ${C_GREEN}v4:${C_RESET} %-15s │ ${C_CYAN}v6:${C_RESET} %-18s │ %s\n" \
+                "$((i + 1))" "$dt" "${ip_v4:0:15}" "${ip_v6:0:18}" "${loc_str:+($loc_str)}"
+        done
+
+        echo ""
+        local nav_hint=""
+        (( page + 1 < total_pages )) && nav_hint+="[n] 下一页 | "
+        (( page > 0 )) && nav_hint+="[p] 上一页 | "
+        echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}"
+        echo -ne "${C_CYAN}操作: [编号] 查看快照 | ${nav_hint}[0/回车] 返回主菜单: ${C_RESET}"
+        read -r opt_act
+
+        if [[ "$opt_act" == "0" || -z "$opt_act" ]]; then
+            break
+        elif [[ "$opt_act" == "n" || "$opt_act" == "N" ]]; then
+            if (( page + 1 < total_pages )); then
+                page=$((page + 1))
+            fi
+        elif [[ "$opt_act" == "p" || "$opt_act" == "P" ]]; then
+            if (( page > 0 )); then
+                page=$((page - 1))
+            fi
+        elif [[ "$opt_act" =~ ^[0-9]+$ ]] && (( opt_act >= 1 && opt_act <= total_count )); then
+            local chosen_ts="${sorted_ts[$((opt_act - 1))]}"
+            local sel_v4="$V4_DIR/${chosen_ts}.json"
+            local sel_v6
+            sel_v6=$(find_matching_v6 "$chosen_ts")
+            render_archive_snapshot "$sel_v4" "$sel_v6" "$chosen_ts"
         fi
-        if [[ -n "$f_v6" && -f "$f_v6" ]]; then
-            ip_v6=$(jq -r '.Head.IP // "未知"' "$f_v6" 2>/dev/null)
-            [[ -z "$loc_str" || "$loc_str" == "null" ]] && loc_str=$(jq -r '.Info.Region.Name // ""' "$f_v6" 2>/dev/null)
-        fi
-        [[ "$loc_str" == "null" ]] && loc_str=""
-
-        printf "  ${C_BOLD}[%2d]${C_RESET} %-19s │ ${C_GREEN}v4:${C_RESET} %-15s │ ${C_CYAN}v6:${C_RESET} %-18s │ %s\n" \
-            "$((i + 1))" "$dt" "${ip_v4:0:15}" "${ip_v6:0:18}" "${loc_str:+($loc_str)}"
     done
-
-    echo ""
-    echo -ne "${C_CYAN}请输入记录编号查看完整图表快照 (输入 0 返回): ${C_RESET}"
-    read -r idx_opt
-
-    if [[ "$idx_opt" =~ ^[0-9]+$ ]] && (( idx_opt >= 1 && idx_opt <= show_count )); then
-        local chosen_ts="${sorted_ts[$((idx_opt - 1))]}"
-        local sel_v4="$V4_DIR/${chosen_ts}.json"
-        local sel_v6
-        sel_v6=$(find_matching_v6 "$chosen_ts")
-        render_archive_snapshot "$sel_v4" "$sel_v6" "$chosen_ts"
-    fi
 }
 
 # ==============================================================================
@@ -1764,8 +1821,8 @@ cleanup_data() {
     print_module_header "🗑️  清理与维护历史数据"
 
     local v4_cnt v6_cnt v4_size v6_size
-    v4_cnt=$(ls -1 "$V4_DIR"/*.json 2>/dev/null | wc -l)
-    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    v4_cnt=$(count_json_files "$V4_DIR")
+    v6_cnt=$(count_json_files "$V6_DIR")
     v4_size=$(du -sh "$V4_DIR" 2>/dev/null | awk '{print $1}')
     v6_size=$(du -sh "$V6_DIR" 2>/dev/null | awk '{print $1}')
 
@@ -1804,11 +1861,10 @@ cleanup_data() {
             if [[ "$keep_num" =~ ^[0-9]+$ ]] && (( keep_num > 0 )); then
                 for d in "$V4_DIR" "$V6_DIR"; do
                     local total
-                    total=$(ls -1 "$d"/*.json 2>/dev/null | wc -l)
+                    total=$(count_json_files "$d")
                     if (( total > keep_num )); then
                         local diff=$((total - keep_num))
-                        # shellcheck disable=SC2012
-                        ls -1t "$d"/*.json | tail -n "$diff" | xargs rm -f
+                        find "$d" -maxdepth 1 -name '*.json' 2>/dev/null | sort | head -n "$diff" | xargs rm -f 2>/dev/null
                     fi
                 done
                 echo -e "\n${C_GREEN}已保留最近 $keep_num 份存档，清理完成！${C_RESET}"
@@ -1892,13 +1948,12 @@ update_ipqa() {
     clear
     print_module_header "🔄 在线更新 IPQA 系统与检测核心"
     echo -e "${C_CYAN}正在检查并下载 IPQA 主程序最新版本...${C_RESET}"
-    local tmp_file="/tmp/ipqa_update_$$.sh"
+    local tmp_file="$IPQA_HOME/ipqa.sh.tmp"
     if curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh -o "$tmp_file"; then
         if bash -n "$tmp_file" 2>/dev/null; then
-            cp "$tmp_file" "$IPQA_HOME/ipqa.sh"
+            mv "$tmp_file" "$IPQA_HOME/ipqa.sh"
             sed -i 's/\r$//' "$IPQA_HOME/ipqa.sh" 2>/dev/null || true
             chmod +x "$IPQA_HOME/ipqa.sh"
-            rm -f "$tmp_file"
             echo -e "${C_GREEN}✔ IPQA 主程序已更新至最新版本${C_RESET}"
         else
             rm -f "$tmp_file"
@@ -1911,7 +1966,7 @@ update_ipqa() {
     fi
 
     echo -e "\n${C_CYAN}正在同步 IPQuality 检测核心最新版本...${C_RESET}"
-    local tmp_core="/tmp/ip_core_update_$$.sh"
+    local tmp_core="$IPQA_HOME/ip.sh.tmp"
     if curl -sL https://IP.Check.Place -o "$tmp_core" 2>/dev/null || curl -sL https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_core" 2>/dev/null; then
         mv "$tmp_core" "$IP_SCRIPT"
         sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
@@ -1948,12 +2003,15 @@ render_panel() {
     local last_check="从无检测记录"
 
     if [[ -n "$latest_v4" ]]; then
-        ip_v4=$(jq -r '.Head.IP // "未知"' "$latest_v4")
-        asn=$(jq -r '.Info.ASN // "--"' "$latest_v4")
-        org=$(jq -r '.Info.Organization // "--"' "$latest_v4")
-        local city country
-        city=$(jq -r '.Info.City.Name // ""' "$latest_v4")
-        country=$(jq -r '.Info.Region.Name // ""' "$latest_v4")
+        IFS=$'\t' read -r ip_v4 asn org city country < <(
+            jq -r '[
+                (.Head.IP // "未知"),
+                (.Info.ASN // "--"),
+                (.Info.Organization // "--"),
+                (.Info.City.Name // ""),
+                (.Info.Region.Name // "")
+            ] | @tsv' "$latest_v4" 2>/dev/null
+        )
         [[ "$city" == "null" ]] && city=""
         [[ "$country" == "null" ]] && country=""
         if [[ -n "$city" && -n "$country" ]]; then
@@ -1969,16 +2027,16 @@ render_panel() {
     fi
 
     if [[ -n "$latest_v6" ]]; then
-        ip_v6=$(jq -r '.Head.IP // "无"' "$latest_v6")
+        ip_v6=$(jq -r '.Head.IP // "无"' "$latest_v6" 2>/dev/null)
     fi
 
     # 统计数量与时间跨度
     local count_v4 count_v6
-    count_v4=$(ls -1 "$V4_DIR"/*.json 2>/dev/null | wc -l)
-    count_v6=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    count_v4=$(count_json_files "$V4_DIR")
+    count_v6=$(count_json_files "$V6_DIR")
 
     local oldest_file time_span="--"
-    oldest_file=$(ls -1 "$V4_DIR"/*.json 2>/dev/null | head -n 1)
+    oldest_file=$(find "$V4_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort | head -n 1)
     if [[ -n "$oldest_file" && -n "$latest_v4" ]]; then
         local d1 d2
         d1=$(fmt_short_date "$(basename "$oldest_file" .json)")
@@ -2011,9 +2069,19 @@ render_panel() {
     local asn_display="$asn"
     [[ "$asn" =~ ^[0-9]+$ ]] && asn_display="AS$asn"
 
+    # 获取检测核心版本
+    local core_ver=""
+    if [[ -f "$IP_SCRIPT" ]]; then
+        core_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
+    fi
+    local ver_display="${IPQA_VERSION}"
+    if [[ -n "$core_ver" ]]; then
+        ver_display="${IPQA_VERSION} (Core: ${core_ver})"
+    fi
+
     # 打印顶部 Panel
     echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
-    echo -e "   ${C_BOLD}${C_GREEN}🔍 IP 质量存档监测系统 (IPQA)${C_RESET}  ${C_GRAY}${IPQA_VERSION}${C_RESET}"
+    echo -e "   ${C_BOLD}${C_GREEN}🔍 IP 质量存档监测系统 (IPQA)${C_RESET}  ${C_GRAY}${ver_display}${C_RESET}"
     echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
     echo ""
     echo -e "  ${C_CYAN}📡 节点网络:${C_RESET} ${C_BOLD}${ip_v4}${C_RESET} (IPv4)  ${C_GRAY}│${C_RESET}  ${C_BOLD}${ip_v6}${C_RESET} (IPv6)"
@@ -2105,8 +2173,8 @@ case "$1" in
     --status)
         check_dependencies
         load_config
-        v4_cnt=$(ls -1 "$V4_DIR"/*.json 2>/dev/null | wc -l)
-        v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+        v4_cnt=$(count_json_files "$V4_DIR")
+        v6_cnt=$(count_json_files "$V6_DIR")
         latest=$(get_latest_archive "$V4_DIR")
         echo "IPQA Status ($IPQA_VERSION)"
         echo "Archives: v4: $v4_cnt, v6: $v6_cnt"

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # IP Quality Archive (IPQA) - 一键安装脚本
-# Version: 1.0.0
 # Description: 自动化安装 IPQA 监测系统及必要依赖 (jq, curl, cron)
 # GitHub: https://github.com/xykt/IPQuality
 # ==============================================================================
@@ -277,6 +276,8 @@ if [[ -f "$INSTALL_DIR/ip.sh" ]]; then
     fi
     # 3. 修复上游 ip.sh 在 Check_DNS_IP 中因未解析到 IP 将原生解锁误判为 DNS 解锁的 bug
     sed -i -e '/function Check_DNS_IP/,/function Check_DNS_1/{ /else/{ n; s/echo 0/echo 1/; } }' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
+    # 4. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
+    sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
 fi
 
 # 自动计算服务器当前时区下对应“北京时间凌晨 04:00”的小时数 (0-23)

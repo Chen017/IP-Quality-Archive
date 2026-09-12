@@ -195,6 +195,19 @@ has_cmd jq || needed_pkgs+=("jq")
 has_cmd curl || needed_pkgs+=("curl")
 has_cmd crontab || needed_pkgs+=("cron")
 
+# 检查 dig 与 nslookup (dnsutils 或 bind-utils)，保证流媒体/AI 解锁原生与 DNS 判定的准确性
+if ! has_cmd dig || ! has_cmd nslookup; then
+    if has_cmd apt-get; then
+        needed_pkgs+=("dnsutils")
+    elif has_cmd dnf || has_cmd yum || has_cmd zypper; then
+        needed_pkgs+=("bind-utils")
+    elif has_cmd apk; then
+        needed_pkgs+=("bind-tools")
+    elif has_cmd pacman; then
+        needed_pkgs+=("bind")
+    fi
+fi
+
 if [[ ${#needed_pkgs[@]} -gt 0 ]]; then
     pkg_install "${needed_pkgs[@]}" || true
 fi
@@ -253,8 +266,17 @@ fi
 sed -i 's/\r$//' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
 sed -i 's/\r$//' "$INSTALL_DIR/ipqa.sh" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/ip.sh" "$INSTALL_DIR/ipqa.sh"
-if [[ -f "$INSTALL_DIR/ip.sh" ]] && ! grep -q 'Company: { IP2LOCATION' "$INSTALL_DIR/ip.sh" 2>/dev/null; then
-    sed -i '/Company: { ipapi:/a \type_updates+=".Type |= . * { Company: { IP2LOCATION: \\"$(clean_ansi "${ip2location[scomtype]:-null}")\\" } } | "' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
+if [[ -f "$INSTALL_DIR/ip.sh" ]]; then
+    # 1. 修复上游 ip.sh 未将 IP2Location 公司类型写入 JSON 的 bug
+    if ! grep -q 'Company: { IP2LOCATION' "$INSTALL_DIR/ip.sh" 2>/dev/null; then
+        sed -i '/Company: { ipapi:/a \type_updates+=".Type |= . * { Company: { IP2LOCATION: \\"$(clean_ansi "${ip2location[scomtype]:-null}")\\" } } | "' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
+    fi
+    # 2. 修复上游 ip.sh 在 Check_DNS_3 中因缺少 dig 或超时将原生解锁误判为 DNS 解锁的 bug
+    if grep -q 'if \[ "$resultdnstext" == "0" \];then' "$INSTALL_DIR/ip.sh" 2>/dev/null; then
+        sed -i 's/if \[ "$resultdnstext" == "0" \];then/if [ "$resultdnstext" == "0" ] || [ -z "$resultdnstext" ];then/g' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
+    fi
+    # 3. 修复上游 ip.sh 在 Check_DNS_IP 中因未解析到 IP 将原生解锁误判为 DNS 解锁的 bug
+    sed -i -e '/function Check_DNS_IP/,/function Check_DNS_1/{ /else/{ n; s/echo 0/echo 1/; } }' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
 fi
 
 # 自动计算服务器当前时区下对应“北京时间凌晨 04:00”的小时数 (0-23)

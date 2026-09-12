@@ -184,10 +184,19 @@ check_dependencies() {
 
 patch_ip_script() {
     [[ ! -f "$IP_SCRIPT" ]] && return
-    # 修复上游 ip.sh 未将 IP2Location 公司类型写入 JSON 的 bug
+
+    # 1. 修复上游 ip.sh 未将 IP2Location 公司类型写入 JSON 的 bug
     if ! grep -q 'Company: { IP2LOCATION' "$IP_SCRIPT" 2>/dev/null; then
         sed -i '/Company: { ipapi:/a \type_updates+=".Type |= . * { Company: { IP2LOCATION: \\"$(clean_ansi "${ip2location[scomtype]:-null}")\\" } } | "' "$IP_SCRIPT" 2>/dev/null || true
     fi
+
+    # 2. 修复上游 ip.sh 在 Check_DNS_3 中因缺少 dig 或超时将原生解锁误判为 DNS 解锁的 bug
+    if grep -q 'if \[ "$resultdnstext" == "0" \];then' "$IP_SCRIPT" 2>/dev/null; then
+        sed -i 's/if \[ "$resultdnstext" == "0" \];then/if [ "$resultdnstext" == "0" ] || [ -z "$resultdnstext" ];then/g' "$IP_SCRIPT" 2>/dev/null || true
+    fi
+
+    # 3. 修复上游 ip.sh 在 Check_DNS_IP 中因未解析到 IP 将原生解锁误判为 DNS 解锁的 bug
+    sed -i -e '/function Check_DNS_IP/,/function Check_DNS_1/{ /else/{ n; s/echo 0/echo 1/; } }' "$IP_SCRIPT" 2>/dev/null || true
 }
 
 ensure_ip_script() {

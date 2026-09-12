@@ -33,6 +33,36 @@ bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/mai
 | `ipqa --update` | 更新主程序与检测引擎 |
 | `ipqa --uninstall` | 卸载程序并清理定时任务 |
 
+## 界面预览
+
+### 主控制面板
+<p align="center">
+  <a href="pics/dashboard.png"><img src="pics/dashboard.png" alt="主控制面板" width="720" /></a>
+  <br>
+  <em>主控制面板：双栈信息、变动提醒与功能导航</em>
+</p>
+
+### 历史趋势图表
+> 回看历史时自动采用变动感知采样，优先提取发生过属性变动的节点。点击图片可放大查看原图。
+
+| IP 类型演变分析 | 流媒体与 AI 解锁历史 |
+| :---: | :---: |
+| <a href="pics/type_analysis.png"><img src="pics/type_analysis.png" width="380" alt="IP 类型属性变动分析" /></a> | <a href="pics/media_unlock.png"><img src="pics/media_unlock.png" width="380" alt="流媒体与 AI 解锁历史" /></a> |
+| **核心安全因子矩阵与追踪** | **邮件连通与 DNS 黑名单监测** |
+| <a href="pics/risk_factors.png"><img src="pics/risk_factors.png" width="380" alt="风险因子综合矩阵" /></a> | <a href="pics/email_dnsbl.png"><img src="pics/email_dnsbl.png" width="380" alt="邮件连通性与 DNS 黑名单" /></a> |
+
+### 历史存档与全量快照
+
+<p align="center">
+  <a href="pics/archive_list.png"><img src="pics/archive_list.png" width="620" alt="历史存档列表分页" /></a>
+  <br>
+  <em>历史存档列表：支持 [n]/[p] 交互分页与单条快照检索</em>
+</p>
+
+| 综合风险评分历史走势（长图） | 历史双栈检测快照卡片（长图） |
+| :---: | :---: |
+| <a href="pics/risk_score.png"><img src="pics/risk_score.png" width="280" alt="综合风险评分历史走势" /></a> | <a href="pics/snapshot_card.png"><img src="pics/snapshot_card.png" width="460" alt="双栈历史存档快照卡片" /></a> |
+
 ## 目录结构
 
 所有配置与数据默认保存在 `~/.ipqa/`：

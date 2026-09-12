@@ -1054,7 +1054,7 @@ setup_cron() {
 
     # 检测当前 crontab 中是否有 ipqa 任务
     local current_cron
-    current_cron=$(crontab -l 2>/dev/null | grep "ipqa.sh --cron" || true)
+    current_cron=$(crontab -l 2>/dev/null | grep -E "ipqa(\.sh)? --cron" | head -n 1 || true)
 
     if [[ -n "$current_cron" ]]; then
         echo -e "当前状态: ${C_GREEN}已启用自动检测${C_RESET}"
@@ -1088,8 +1088,14 @@ setup_cron() {
             read -r new_cron_expr
             ;;
         7)
-            # 移除
-            (crontab -l 2>/dev/null | grep -v "ipqa.sh --cron" | grep -v "# IPQA AUTO CHECK") | crontab -
+            # 移除所有历史 IPQA cron (去重清理)
+            local remaining
+            remaining=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
+            if [[ -n "$remaining" ]]; then
+                echo "$remaining" | crontab -
+            else
+                crontab -r 2>/dev/null || true
+            fi
             echo -e "\n${C_GREEN}已成功移除定时检测任务！${C_RESET}"
             log_msg "INFO" "用户手动关闭了定时检测 cron 任务"
             read -r -p "按回车键返回..."
@@ -1106,9 +1112,9 @@ setup_cron() {
         script_path="$IPQA_HOME/ipqa.sh"
     fi
 
-    # 清理旧的 IPQA cron，再追加新配置
+    # 清理旧的 IPQA cron 进行严格去重，再追加新配置
     local existing_cron
-    existing_cron=$(crontab -l 2>/dev/null | grep -v "ipqa.sh --cron" | grep -v "# IPQA AUTO CHECK" || true)
+    existing_cron=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
 
     {
         [[ -n "$existing_cron" ]] && echo "$existing_cron"
@@ -1301,7 +1307,17 @@ render_panel() {
         local city country
         city=$(jq -r '.Info.City.Name // ""' "$latest_v4")
         country=$(jq -r '.Info.Region.Name // ""' "$latest_v4")
-        loc="$city, $country"
+        [[ "$city" == "null" ]] && city=""
+        [[ "$country" == "null" ]] && country=""
+        if [[ -n "$city" && -n "$country" ]]; then
+            loc="$city, $country"
+        elif [[ -n "$country" ]]; then
+            loc="$country"
+        elif [[ -n "$city" ]]; then
+            loc="$city"
+        else
+            loc="未知"
+        fi
         last_check=$(fmt_timestamp "$(basename "$latest_v4" .json)")
     fi
 
@@ -1323,10 +1339,21 @@ render_panel() {
         time_span="$d1 ~ $d2"
     fi
 
-    # 定时检测状态
+    # 定时检测状态 (提取执行周期并显示友好名称)
     local cron_status="未开启"
-    if crontab -l 2>/dev/null | grep -q "ipqa.sh --cron"; then
-        cron_status="已启用 (Cron)"
+    local cron_line
+    cron_line=$(crontab -l 2>/dev/null | grep -E "ipqa(\.sh)? --cron" | head -n 1 || true)
+    if [[ -n "$cron_line" ]]; then
+        local schedule
+        schedule=$(echo "$cron_line" | awk '{print $1,$2,$3,$4,$5}')
+        case "$schedule" in
+            "0 * * * *") cron_status="已启用 (每小时)" ;;
+            "0 */3 * * *") cron_status="已启用 (每 3 小时)" ;;
+            "0 */6 * * *") cron_status="已启用 (每 6 小时)" ;;
+            "0 */12 * * *") cron_status="已启用 (每 12 小时)" ;;
+            "0 4 * * *") cron_status="已启用 (每天)" ;;
+            *) cron_status="已启用 ($schedule)" ;;
+        esac
     fi
 
     # 打印顶部 Panel

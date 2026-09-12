@@ -214,7 +214,7 @@ if [[ "$NON_INTERACTIVE" == "false" ]]; then
     setup_cron_ans="${setup_cron_ans:-y}"
     if [[ "$setup_cron_ans" =~ ^[yY] ]]; then
         CRON_BIN="$(command -v ipqa 2>/dev/null || echo "$INSTALL_DIR/ipqa.sh")"
-        existing=$(crontab -l 2>/dev/null | grep -v "ipqa.sh --cron" || true)
+        existing=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
         {
             [[ -n "$existing" ]] && echo "$existing"
             echo "# IPQA AUTO CHECK - DO NOT EDIT MANUALLY"

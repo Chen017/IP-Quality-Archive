@@ -150,6 +150,36 @@ ensure_ip_script() {
     return 0
 }
 
+# 每天自动同步最新 IPQuality 检测核心 (静默执行)
+auto_update_core_if_needed() {
+    local quiet="${1:-true}"
+    local stamp_file="$IPQA_HOME/.last_core_update"
+    local now_sec
+    now_sec=$(date +%s)
+    local last_update=0
+    [[ -f "$stamp_file" ]] && last_update=$(cat "$stamp_file" 2>/dev/null || echo 0)
+
+    # 上次更新距离现在超过 24 小时 (86400 秒) 或核心文件不存在时自动同步
+    if [[ ! -f "$IP_SCRIPT" ]] || (( now_sec - last_update >= 86400 )); then
+        [[ "$quiet" == "false" ]] && echo -e "${C_CYAN}🔄 距上次更新已超 24 小时，正在自动同步最新检测核心...${C_RESET}"
+        log_msg "INFO" "触发检测核心每日自动同步"
+        local tmp_file="$IPQA_HOME/ip.sh.tmp"
+        if curl -sL https://IP.Check.Place -o "$tmp_file" 2>/dev/null || curl -sL https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_file" 2>/dev/null; then
+            mv "$tmp_file" "$IP_SCRIPT"
+            sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
+            chmod +x "$IP_SCRIPT"
+            echo "$now_sec" > "$stamp_file"
+            local new_ver
+            new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
+            log_msg "INFO" "自动更新核心成功，版本: $new_ver"
+            [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ 检测核心已自动同步至最新 (版本: ${new_ver:-未知})${C_RESET}\n"
+        else
+            rm -f "$tmp_file"
+            log_msg "WARN" "自动更新检测核心网络超时，继续使用本地核心"
+        fi
+    fi
+}
+
 # 验证 JSON 有效性
 validate_json() {
     local file="$1"
@@ -338,6 +368,7 @@ compare_and_alert() {
 run_check() {
     local quiet="${1:-false}"
     ensure_ip_script || return 1
+    auto_update_core_if_needed "$quiet"
     load_config
 
     local ts
@@ -502,8 +533,8 @@ load_archive_files() {
     fi
 }
 
-# 选择时间跨度与 IP 协议
-select_time_and_proto() {
+# 选择数据时间范围 (无需选择 v4/v6，默认全部双栈展现)
+select_time_range() {
     echo -e "${C_BOLD}选择数据时间范围:${C_RESET}"
     echo -e "  [1] 最近 24 小时   [4] 最近 30 天"
     echo -e "  [2] 最近 7 天      [5] 全部历史记录"
@@ -514,20 +545,6 @@ select_time_and_proto() {
     if [[ "$range_opt" == "0" ]]; then
         return 1
     fi
-
-    echo -e "\n${C_BOLD}选择 IP 协议版本:${C_RESET}"
-    echo -e "  [4] IPv4 存档      [6] IPv6 存档"
-    echo -ne "${C_CYAN}请输入选项 [默认 4]: ${C_RESET}"
-    read -r proto_opt
-    proto_opt="${proto_opt:-4}"
-
-    if [[ "$proto_opt" == "6" ]]; then
-        TARGET_DIR="$V6_DIR"
-        TARGET_PROTO="IPv6"
-    else
-        TARGET_DIR="$V4_DIR"
-        TARGET_PROTO="IPv4"
-    fi
     SELECTED_RANGE="$range_opt"
     return 0
 }
@@ -535,20 +552,18 @@ select_time_and_proto() {
 # ==============================================================================
 # 模块 1: IP 类型属性变化 (show_ip_type)
 # ==============================================================================
-show_ip_type() {
-    clear
-    select_time_and_proto || return
-    clear
+render_ip_type_table() {
+    local target_dir="$1"
+    local target_proto="$2"
 
     local files=()
-    mapfile -t files < <(load_archive_files "$TARGET_DIR" "$SELECTED_RANGE" 8)
+    mapfile -t files < <(load_archive_files "$target_dir" "$SELECTED_RANGE" 8)
     if [[ ${#files[@]} -eq 0 ]]; then
-        echo -e "${C_YELLOW}未找到 $TARGET_PROTO 存档数据，请先执行一次检测 (选项 8)${C_RESET}\n"
-        read -r -p "按回车键返回..."
+        echo -e "${C_GRAY}暂无 $target_proto 存档数据${C_RESET}"
         return
     fi
 
-    print_module_header "📊 IP 类型属性变化分析 ($TARGET_PROTO)"
+    echo -e "${C_CYAN}${C_BOLD}▶ $target_proto IP 类型属性变化分析:${C_RESET}"
 
     # 提取各列时间表头
     local dates=()
@@ -557,13 +572,14 @@ show_ip_type() {
     done
 
     # 打印表头
-    printf "%-13s" "数据库"
+    printf "  %-11s" "数据库"
     for d in "${dates[@]}"; do
         printf "│ %-8s " "$d"
     done
     printf "│ %-10s\n" "历史稳定性"
     
     local divider_len=$(( 13 + ${#dates[@]} * 11 + 14 ))
+    echo -ne "  "
     draw_divider "$divider_len"
 
     # 数据库键值清单
@@ -573,7 +589,7 @@ show_ip_type() {
     for idx in "${!row_keys[@]}"; do
         local rk="${row_keys[$idx]}"
         local rname="${row_names[$idx]}"
-        printf "%-12s " "$rname"
+        printf "  %-10s " "$rname"
 
         local vals=()
         for f in "${files[@]}"; do
@@ -616,8 +632,26 @@ show_ip_type() {
         fi
     done
 
+    echo -ne "  "
     draw_divider "$divider_len"
-    echo -e "${C_GRAY}图例: ${C_GREEN}家宽/原生(绿色)${C_GRAY} | ${C_YELLOW}商业(黄色)${C_GRAY} | ${C_RED}机房/广播(红色)${C_GRAY} | 灰色(未识别/无数据)${C_RESET}\n"
+}
+
+show_ip_type() {
+    clear
+    select_time_range || return
+    clear
+    print_module_header "📊 IP 类型属性变化分析"
+
+    render_ip_type_table "$V4_DIR" "IPv4"
+
+    local v6_cnt
+    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    if (( v6_cnt > 0 )); then
+        echo ""
+        render_ip_type_table "$V6_DIR" "IPv6"
+    fi
+
+    echo -e "\n${C_GRAY}图例: ${C_GREEN}家宽/原生(绿色)${C_GRAY} | ${C_YELLOW}商业(黄色)${C_GRAY} | ${C_RED}机房/广播(红色)${C_GRAY} | 灰色(未识别/无数据)${C_RESET}\n"
     read -r -p "按回车键返回主菜单..."
 }
 
@@ -658,35 +692,49 @@ render_bar() {
     printf "${color}%s${C_RESET}${C_GRAY}%s${C_RESET} %3d ${color}%s${C_RESET}\n" "$bar_str" "$empty_str" "$score" "$badge"
 }
 
-show_risk_score() {
-    clear
-    select_time_and_proto || return
-    clear
+render_risk_score_chart() {
+    local target_dir="$1"
+    local target_proto="$2"
 
     local files=()
-    mapfile -t files < <(load_archive_files "$TARGET_DIR" "$SELECTED_RANGE" 6)
+    mapfile -t files < <(load_archive_files "$target_dir" "$SELECTED_RANGE" 6)
     if [[ ${#files[@]} -eq 0 ]]; then
-        echo -e "${C_YELLOW}未找到 $TARGET_PROTO 存档数据${C_RESET}\n"
-        read -r -p "按回车键返回..."
+        echo -e "${C_GRAY}暂无 $target_proto 评分存档数据${C_RESET}"
         return
     fi
 
-    print_module_header "📈 风险评分历史趋势图 ($TARGET_PROTO)"
+    echo -e "${C_CYAN}${C_BOLD}▶ $target_proto 综合风险评分历史走势:${C_RESET}"
 
     local dbs=("SCAMALYTICS" "IP2LOCATION" "AbuseIPDB" "IPQS" "ipapi" "DBIP")
 
     for db in "${dbs[@]}"; do
-        echo -e "${C_BOLD}▶ 数据库: ${C_CYAN}$db${C_RESET} (满分 100)"
+        echo -e "${C_BOLD}  • 数据库: ${C_CYAN}$db${C_RESET} (满分 100)"
         for f in "${files[@]}"; do
             local dt
             dt=$(fmt_short_time "$(basename "$f" .json)")
             local score
             score=$(jq -r ".Score.$db // \"null\"" "$f")
-            printf "  %-12s ▏ " "$dt"
+            printf "    %-12s ▏ " "$dt"
             render_bar "$score"
         done
         echo ""
     done
+}
+
+show_risk_score() {
+    clear
+    select_time_range || return
+    clear
+    print_module_header "📈 综合风险评分历史趋势"
+
+    render_risk_score_chart "$V4_DIR" "IPv4"
+
+    local v6_cnt
+    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    if (( v6_cnt > 0 )); then
+        echo ""
+        render_risk_score_chart "$V6_DIR" "IPv6"
+    fi
 
     echo -e "${C_GRAY}说明: 评分越高风险越高。0-20 低风险 | 21-50 中风险 | 51-75 高风险 | 76+ 极高风险${C_RESET}\n"
     read -r -p "按回车键返回主菜单..."
@@ -695,37 +743,34 @@ show_risk_score() {
 # ==============================================================================
 # 模块 3: 风险因子分析 (show_risk_factor)
 # ==============================================================================
-show_risk_factor() {
-    clear
-    select_time_and_proto || return
-    clear
+render_risk_factor_matrix() {
+    local target_dir="$1"
+    local target_proto="$2"
 
     local latest_file
-    latest_file=$(get_latest_archive "$TARGET_DIR")
+    latest_file=$(get_latest_archive "$target_dir")
     if [[ -z "$latest_file" ]]; then
-        echo -e "${C_YELLOW}未找到 $TARGET_PROTO 存档数据${C_RESET}\n"
-        read -r -p "按回车键返回..."
+        echo -e "${C_GRAY}暂无 $target_proto 风险因子存档${C_RESET}"
         return
     fi
 
-    print_module_header "🔬 风险因子综合矩阵 ($TARGET_PROTO)"
-
-    echo -e "最新检测存档: ${C_YELLOW}$(basename "$latest_file")${C_RESET}\n"
+    echo -e "${C_CYAN}${C_BOLD}▶ $target_proto 核心风险因子综合矩阵 (最新存档: $(basename "$latest_file")):${C_RESET}"
 
     local engines=("IP2L" "ipapi" "ipreg" "IPQS" "SCAM" "ipdata" "IPinfo" "WHOIS" "DBIP")
     local full_engines=("IP2LOCATION" "ipapi" "ipregistry" "IPQS" "SCAMALYTICS" "ipdata" "IPinfo" "IPWHOIS" "DBIP")
     local factors=("Proxy" "Tor" "VPN" "Server" "Abuser" "Robot")
 
     # 打印表头
-    printf "%-10s │ " "风险因子"
+    printf "  %-10s │ " "风险因子"
     for eng in "${engines[@]}"; do
         printf "%-7s " "$eng"
     done
     echo ""
-    draw_divider 76
+    echo -ne "  "
+    draw_divider 74
 
     for factor in "${factors[@]}"; do
-        printf "%-10s │ " "$factor"
+        printf "  %-10s │ " "$factor"
         for eng in "${full_engines[@]}"; do
             local val
             val=$(jq -r "if .Factor[\"$factor\"][\"$eng\"] != null then .Factor[\"$factor\"][\"$eng\"] else .Factor[\"$factor\"][\"WHOIS\"] end" "$latest_file")
@@ -740,11 +785,27 @@ show_risk_factor() {
         echo ""
     done
 
-    draw_divider 76
+    echo -ne "  "
+    draw_divider 74
+    echo ""
+}
+
+show_risk_factor() {
+    clear
+    print_module_header "🔬 风险因子综合矩阵"
+
+    render_risk_factor_matrix "$V4_DIR" "IPv4"
+
+    local v6_cnt
+    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    if (( v6_cnt > 0 )); then
+        render_risk_factor_matrix "$V6_DIR" "IPv6"
+    fi
+
     echo -e "图例说明: ${SYM_DOT_GREEN} 安全/未检出  ${SYM_MARK_RED} 风险检出(警告)  ${SYM_DOT_GRAY} 未检测/不支持\n"
 
-    # 提供展开查看时间趋势选项
-    echo -e "${C_BOLD}进一步查看各因子历史变化趋势?${C_RESET}"
+    # 提供展开查看时间趋势选项 (针对 IPv4 历史)
+    echo -e "${C_BOLD}进一步查看各因子历史变化趋势 (IPv4)?${C_RESET}"
     echo -e "  [1] Proxy 历史   [3] VPN 历史     [5] Abuser 历史"
     echo -e "  [2] Tor 历史     [4] Server 历史  [0] 跳过/返回"
     echo -ne "${C_CYAN}请选择: ${C_RESET}"
@@ -761,10 +822,11 @@ show_risk_factor() {
     esac
 
     clear
-    echo -e "${C_BOLD}▶ 风险因子历史检出率: ${C_CYAN}$target_factor${C_RESET}\n"
+    print_module_header "🔬 $target_factor 因子历史检出追踪"
     local hist_files=()
-    mapfile -t hist_files < <(load_archive_files "$TARGET_DIR" "$SELECTED_RANGE" 10)
+    mapfile -t hist_files < <(load_archive_files "$V4_DIR" 2 10)
 
+    local full_engines=("IP2LOCATION" "ipapi" "ipregistry" "IPQS" "SCAMALYTICS" "ipdata" "IPinfo" "IPWHOIS" "DBIP")
     for hf in "${hist_files[@]}"; do
         local dt
         dt=$(fmt_short_time "$(basename "$hf" .json)")
@@ -795,20 +857,18 @@ show_risk_factor() {
 # ==============================================================================
 # 模块 4: 流媒体与AI解锁 (show_media_unlock)
 # ==============================================================================
-show_media_unlock() {
-    clear
-    select_time_and_proto || return
-    clear
+render_media_unlock_table() {
+    local target_dir="$1"
+    local target_proto="$2"
 
     local files=()
-    mapfile -t files < <(load_archive_files "$TARGET_DIR" "$SELECTED_RANGE" 10)
+    mapfile -t files < <(load_archive_files "$target_dir" "$SELECTED_RANGE" 10)
     if [[ ${#files[@]} -eq 0 ]]; then
-        echo -e "${C_YELLOW}未找到 $TARGET_PROTO 存档数据${C_RESET}\n"
-        read -r -p "按回车键返回..."
+        echo -e "${C_GRAY}暂无 $target_proto 流媒体存档数据${C_RESET}"
         return
     fi
 
-    print_module_header "🎬 流媒体与 AI 解锁历史监测 ($TARGET_PROTO)"
+    echo -e "${C_CYAN}${C_BOLD}▶ $target_proto 流媒体与 AI 解锁历史监测:${C_RESET}"
 
     local dates=()
     for f in "${files[@]}"; do
@@ -816,18 +876,18 @@ show_media_unlock() {
     done
 
     # 打印时间表头
-    printf "%-16s │ " "服务名称"
+    printf "  %-14s │ " "服务名称"
     for d in "${dates[@]}"; do
         printf "%-5s " "$d"
     done
     echo ""
     local div_len=$(( 18 + ${#dates[@]} * 6 ))
+    echo -ne "  "
     draw_divider "$div_len"
 
     local services=("TikTok" "DisneyPlus" "Netflix" "Youtube" "AmazonPrimeVideo" "Reddit" "ChatGPT")
     local display_names=("TikTok" "Disney+" "Netflix" "YouTube" "Amazon PV" "Reddit" "ChatGPT")
 
-    # 统计数据
     local unlock_counts=()
     for ((s=0; s<${#services[@]}; s++)); do
         unlock_counts+=(0)
@@ -836,7 +896,7 @@ show_media_unlock() {
     for idx in "${!services[@]}"; do
         local svc="${services[$idx]}"
         local sname="${display_names[$idx]}"
-        printf "%-16s │ " "$sname"
+        printf "  %-14s │ " "$sname"
 
         local success_in_row=0
         for f in "${files[@]}"; do
@@ -864,11 +924,11 @@ show_media_unlock() {
         echo ""
     done
 
+    echo -ne "  "
     draw_divider "$div_len"
-    echo -e "图例说明: ${SYM_DOT_GREEN} 原生解锁  ${SYM_DOT_ORANGE} DNS/代理解锁  ${SYM_DOT_YELLOW} 仅自制剧  ${SYM_DOT_RED} 失败/屏蔽  ${SYM_DOT_GRAY} 未检测\n"
 
     # 地区变化追踪
-    echo -e "${C_BOLD}📍 地区变化追踪 (Region Evolution):${C_RESET}"
+    echo -e "  📍 地区变化追踪 (Region Evolution):"
     for idx in "${!services[@]}"; do
         local svc="${services[$idx]}"
         local sname="${display_names[$idx]}"
@@ -880,7 +940,6 @@ show_media_unlock() {
             regions+=("$reg")
         done
 
-        # 检查是否有变化
         local has_change=false
         local first_reg="${regions[0]}"
         for r in "${regions[@]}"; do
@@ -890,7 +949,7 @@ show_media_unlock() {
             fi
         done
 
-        printf "  %-12s : " "$sname"
+        printf "    %-11s : " "$sname"
         for r in "${regions[@]}"; do
             printf "%-4s " "$r"
         done
@@ -900,70 +959,88 @@ show_media_unlock() {
             echo -e "  ${C_GREEN}${SYM_CHECK} 稳定${C_RESET}"
         fi
     done
+    echo ""
+}
 
-    # 解锁率统计
-    echo -e "\n${C_BOLD}📊 解锁率统计 (最近 ${#files[@]} 次检测):${C_RESET}"
-    for idx in "${!services[@]}"; do
-        local sname="${display_names[$idx]}"
-        local count="${unlock_counts[$idx]}"
-        local rate=0
-        if [[ ${#files[@]} -gt 0 ]]; then
-            rate=$(( count * 100 / ${#files[@]} ))
-        fi
-        printf "  • %-10s : %3d%%  " "$sname" "$rate"
-        (( (idx + 1) % 3 == 0 )) && echo ""
-    done
-    echo -e "\n"
+show_media_unlock() {
+    clear
+    select_time_range || return
+    clear
+    print_module_header "🎬 流媒体与 AI 解锁历史监测"
+
+    render_media_unlock_table "$V4_DIR" "IPv4"
+
+    local v6_cnt
+    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    if (( v6_cnt > 0 )); then
+        render_media_unlock_table "$V6_DIR" "IPv6"
+    fi
+
+    echo -e "图例说明: ${SYM_DOT_GREEN} 原生解锁  ${SYM_DOT_ORANGE} DNS/代理解锁  ${SYM_DOT_YELLOW} 仅自制剧  ${SYM_DOT_RED} 失败/屏蔽  ${SYM_DOT_GRAY} 未检测\n"
     read -r -p "按回车键返回主菜单..."
 }
 
 # ==============================================================================
-# 模块 5: 邮局连通性 (show_mail_status)
+# 模块 5: 邮件连通与 DNS 黑名单监测 (show_mail_and_blacklist)
 # ==============================================================================
-show_mail_status() {
-    clear
-    select_time_and_proto || return
-    clear
+render_mail_and_blacklist() {
+    local target_dir="$1"
+    local target_proto="$2"
 
     local files=()
-    mapfile -t files < <(load_archive_files "$TARGET_DIR" "$SELECTED_RANGE" 8)
+    mapfile -t files < <(load_archive_files "$target_dir" "$SELECTED_RANGE" 8)
     if [[ ${#files[@]} -eq 0 ]]; then
-        echo -e "${C_YELLOW}未找到 $TARGET_PROTO 存档数据${C_RESET}\n"
-        read -r -p "按回车键返回..."
+        echo -e "${C_GRAY}暂无 $target_proto 邮件与黑名单存档数据${C_RESET}"
         return
     fi
 
-    print_module_header "📬 邮件服务器连通性矩阵 ($TARGET_PROTO)"
+    echo -e "${C_CYAN}${C_BOLD}▶ $target_proto 邮件连通性与 DNS 黑名单状态:${C_RESET}"
 
-    # 最新 Port25 状态
     local latest_file="${files[-1]}"
     local p25_status
-    p25_status=$(jq -r '.Mail.Port25' "$latest_file")
+    p25_status=$(jq -r '.Mail.Port25 // "null"' "$latest_file")
     if [[ "$p25_status" == "true" ]]; then
-        echo -e "当前出站 25 端口 (Port 25): ${C_GREEN}${C_BOLD}✓ 开放 (可发送外网邮件)${C_RESET}"
+        echo -e "  • 25 端口出站 (Port 25): ${C_GREEN}${C_BOLD}✓ 开放 (可发送外网邮件)${C_RESET}"
     elif [[ "$p25_status" == "false" ]]; then
-        echo -e "当前出站 25 端口 (Port 25): ${C_RED}${C_BOLD}✗ 拦截/关闭 (IDC通常默认封禁25)${C_RESET}"
+        echo -e "  • 25 端口出站 (Port 25): ${C_RED}${C_BOLD}✗ 拦截/关闭 (IDC通常默认封禁25)${C_RESET}"
     else
-        echo -e "当前出站 25 端口 (Port 25): ${C_GRAY}未检出状态${C_RESET}"
+        echo -e "  • 25 端口出站 (Port 25): ${C_GRAY}未检测${C_RESET}"
     fi
+
+    # DNS 黑名单概况
+    local total clean marked blacklisted
+    total=$(jq -r '.Mail.DNSBlacklist.Total // 0' "$latest_file")
+    clean=$(jq -r '.Mail.DNSBlacklist.Clean // 0' "$latest_file")
+    marked=$(jq -r '.Mail.DNSBlacklist.Marked // 0' "$latest_file")
+    blacklisted=$(jq -r '.Mail.DNSBlacklist.Blacklisted // 0' "$latest_file")
+
+    local bl_status="${C_GREEN}全部干净通过 (0 拦截)${C_RESET}"
+    if (( blacklisted > 0 )); then
+        bl_status="${C_RED}检出 $blacklisted 个黑名单拦截！${C_RESET}"
+    elif (( marked > 0 )); then
+        bl_status="${C_YELLOW}检出 $marked 个可疑标记${C_RESET}"
+    fi
+    echo -e "  • 全局 DNS 黑名单概况 : $bl_status (共 $total 个数据库, 干净 $clean)"
     echo ""
 
+    # 12 邮局连通性历史表格
     local dates=()
     for f in "${files[@]}"; do
         dates+=("$(fmt_short_date "$(basename "$f" .json)")")
     done
 
-    printf "%-12s │ " "邮局名称"
+    printf "  %-10s │ " "邮局名称"
     for d in "${dates[@]}"; do
         printf "%-6s " "$d"
     done
     echo ""
     local div_len=$(( 15 + ${#dates[@]} * 7 ))
+    echo -ne "  "
     draw_divider "$div_len"
 
     local mail_services=("Gmail" "Outlook" "Yahoo" "Apple" "QQ" "163" "Sohu" "Sina" "MailRU" "AOL" "GMX" "MailCOM")
     for svc in "${mail_services[@]}"; do
-        printf "%-12s │ " "$svc"
+        printf "  %-10s │ " "$svc"
         for f in "${files[@]}"; do
             local res
             res=$(jq -r ".Mail[\"$svc\"]" "$f")
@@ -977,63 +1054,26 @@ show_mail_status() {
         done
         echo ""
     done
-
+    echo -ne "  "
     draw_divider "$div_len"
-    echo -e "图例说明: ${SYM_DOT_GREEN} 连通正常  ${SYM_DOT_RED} 连接失败/被拒  ${SYM_DOT_GRAY} 未检测\n"
-    read -r -p "按回车键返回主菜单..."
+    echo ""
 }
 
-# ==============================================================================
-# 模块 6: 黑名单状态 (show_blacklist)
-# ==============================================================================
-show_blacklist() {
+show_mail_and_blacklist() {
     clear
-    select_time_and_proto || return
+    select_time_range || return
     clear
+    print_module_header "📬 邮件连通性与 DNS 黑名单监测"
 
-    local files=()
-    mapfile -t files < <(load_archive_files "$TARGET_DIR" "$SELECTED_RANGE" 15)
-    if [[ ${#files[@]} -eq 0 ]]; then
-        echo -e "${C_YELLOW}未找到 $TARGET_PROTO 存档数据${C_RESET}\n"
-        read -r -p "按回车键返回..."
-        return
+    render_mail_and_blacklist "$V4_DIR" "IPv4"
+
+    local v6_cnt
+    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    if (( v6_cnt > 0 )); then
+        render_mail_and_blacklist "$V6_DIR" "IPv6"
     fi
 
-    print_module_header "🚫 DNS 黑名单趋势与现状 ($TARGET_PROTO)"
-
-    local latest_file="${files[-1]}"
-    local total clean marked blacklisted
-    total=$(jq -r '.Mail.DNSBlacklist.Total // 0' "$latest_file")
-    clean=$(jq -r '.Mail.DNSBlacklist.Clean // 0' "$latest_file")
-    marked=$(jq -r '.Mail.DNSBlacklist.Marked // 0' "$latest_file")
-    blacklisted=$(jq -r '.Mail.DNSBlacklist.Blacklisted // 0' "$latest_file")
-
-    echo -e "${C_BOLD}【最新检出概况】${C_RESET}"
-    echo -e "  • 数据库总数: ${C_CYAN}$total${C_RESET}"
-    echo -e "  • 干净通过数: ${C_GREEN}$clean${C_RESET}"
-    echo -e "  • 被标记记录: ${C_YELLOW}$marked${C_RESET}"
-    echo -e "  • 严重黑名单: ${C_RED}$blacklisted${C_RESET}"
-    echo ""
-
-    echo -e "${C_BOLD}【历史黑名单数量变化趋势】${C_RESET}"
-    printf "  %-12s ▏ %-10s ▏ %-10s\n" "检测时间" "被标记(Mark)" "黑名单(Block)"
-    printf "  ─────────────┼────────────┼─────────────\n"
-
-    for f in "${files[@]}"; do
-        local dt
-        dt=$(fmt_short_time "$(basename "$f" .json)")
-        local m b
-        m=$(jq -r '.Mail.DNSBlacklist.Marked // 0' "$f")
-        b=$(jq -r '.Mail.DNSBlacklist.Blacklisted // 0' "$f")
-        
-        local m_color="$C_GREEN"
-        (( m > 0 )) && m_color="$C_YELLOW"
-        local b_color="$C_GREEN"
-        (( b > 0 )) && b_color="$C_RED"
-
-        printf "  %-12s ▏ ${m_color}%-10s${C_RESET} ▏ ${b_color}%-10s${C_RESET}\n" "$dt" "$m" "$b"
-    done
-    echo ""
+    echo -e "图例说明: ${SYM_DOT_GREEN} 连通正常  ${SYM_DOT_RED} 连接失败/被拒  ${SYM_DOT_GRAY} 未检测\n"
     read -r -p "按回车键返回主菜单..."
 }
 
@@ -1122,80 +1162,204 @@ setup_cron() {
 }
 
 # ==============================================================================
-# 模块 9: 查看原始存档 (view_archives)
+# 模块 6: 查看历史存档快照 (view_archives - 图形图表化美化版，双栈合并展示)
 # ==============================================================================
-view_archives() {
-    clear
-    select_time_and_proto || return
+render_archive_snapshot() {
+    local f="$1"
+    local proto_tag="$2"
     clear
 
-    local files=()
-    mapfile -t files < <(ls -1r "$TARGET_DIR"/*.json 2>/dev/null)
-    if [[ ${#files[@]} -eq 0 ]]; then
-        echo -e "${C_YELLOW}暂无 $TARGET_PROTO 原始存档数据${C_RESET}\n"
-        read -r -p "按回车键返回..."
-        return
+    local fname
+    fname=$(basename "$f" .json)
+    local dt
+    dt=$(fmt_timestamp "$fname")
+
+    local ip asn org city country ip_type usage_ipinfo usage_ip2l
+    ip=$(jq -r '.Head.IP // "未知"' "$f")
+    asn=$(jq -r '.Info.ASN // "--"' "$f")
+    [[ "$asn" =~ ^[0-9]+$ ]] && asn="AS$asn"
+    org=$(jq -r '.Info.Organization // "--"' "$f")
+    city=$(jq -r '.Info.City.Name // ""' "$f")
+    country=$(jq -r '.Info.Region.Name // ""' "$f")
+    [[ "$city" == "null" ]] && city=""
+    [[ "$country" == "null" ]] && country=""
+    local loc="未知"
+    if [[ -n "$city" && -n "$country" ]]; then loc="$city, $country"; elif [[ -n "$country" ]]; then loc="$country"; elif [[ -n "$city" ]]; then loc="$city"; fi
+
+    ip_type=$(jq -r '.Info.Type // "--"' "$f" | sed 's/Geo-consistent/原生IP/;s/Geo-discrepant/广播IP/')
+    usage_ipinfo=$(jq -r '.Type.Usage.IPinfo // "--"' "$f")
+    usage_ip2l=$(jq -r '.Type.Usage.IP2LOCATION // "--"' "$f")
+
+    print_module_header "📋 历史存档检测快照: $dt [$proto_tag]"
+
+    echo -e "  ${C_CYAN}📡 节点 IP  :${C_RESET} ${C_BOLD}${ip}${C_RESET} ($proto_tag)"
+    echo -e "  ${C_CYAN}🏢 组织/ASN :${C_RESET} ${asn} (${org})"
+    echo -e "  ${C_CYAN}📍 地理位置 :${C_RESET} ${loc}"
+    echo -e "  ${C_CYAN}🏷️ 属性类型 :${C_RESET} ${C_GREEN}${ip_type}${C_RESET} │ IPinfo: ${usage_ipinfo} │ IP2Location: ${usage_ip2l}"
+    echo ""
+
+    # 风控评分
+    echo -e "${C_GRAY}── ${C_CYAN}📊 权威风控评分${C_RESET} ${C_GRAY}───────────────────────────────────────────────────${C_RESET}"
+    local score_dbs=("SCAMALYTICS" "IP2LOCATION" "AbuseIPDB" "IPQS" "ipapi" "DBIP")
+    for sdb in "${score_dbs[@]}"; do
+        local sc
+        sc=$(jq -r ".Score.$sdb // \"null\"" "$f")
+        printf "  • %-13s ▏ " "$sdb"
+        render_bar "$sc"
+    done
+    echo ""
+
+    # 风险因子
+    echo -e "${C_GRAY}── ${C_CYAN}🔬 核心风险因子检出${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
+    local factors=("Proxy" "Tor" "VPN" "Server" "Abuser" "Robot")
+    local factor_line=" "
+    for fac in "${factors[@]}"; do
+        local engines=("IP2LOCATION" "ipapi" "ipregistry" "IPQS" "SCAMALYTICS" "ipdata" "IPinfo" "IPWHOIS" "DBIP")
+        local is_detected=false
+        for eng in "${engines[@]}"; do
+            local val
+            val=$(jq -r "if .Factor[\"$fac\"][\"$eng\"] != null then .Factor[\"$fac\"][\"$eng\"] else .Factor[\"$fac\"][\"WHOIS\"] end" "$f")
+            if [[ "$val" == "true" ]]; then
+                is_detected=true
+                break
+            fi
+        done
+        if [[ "$is_detected" == "true" ]]; then
+            factor_line+=" ${fac}: ${C_RED}● 检出${C_RESET}  "
+        else
+            factor_line+=" ${fac}: ${C_GREEN}● 正常${C_RESET}  "
+        fi
+    done
+    echo -e "$factor_line"
+    echo ""
+
+    # 流媒体解锁
+    echo -e "${C_GRAY}── ${C_CYAN}🎬 流媒体与 AI 解锁${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
+    local media_list=("Youtube" "Netflix" "DisneyPlus" "TikTok" "ChatGPT" "Reddit")
+    local media_names=("YouTube" "Netflix" "Disney+" "TikTok" "ChatGPT" "Reddit")
+    for ((m_i=0; m_i<${#media_list[@]}; m_i++)); do
+        local m_key="${media_list[$m_i]}"
+        local m_name="${media_names[$m_i]}"
+        local st reg
+        st=$(jq -r ".Media.$m_key.Status // \"未知\"" "$f")
+        reg=$(jq -r ".Media.$m_key.Region // \"\"" "$f")
+        [[ "$reg" == "null" ]] && reg=""
+
+        local st_badge
+        if [[ "$st" =~ (解锁|Yes|Native) ]]; then
+            st_badge="${C_GREEN}✓ 解锁${C_RESET}"
+            [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
+        elif [[ "$st" =~ (仅自制|Originals Only) ]]; then
+            st_badge="${C_YELLOW}⚠️ 仅自制剧${C_RESET}"
+            [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
+        elif [[ "$st" =~ (失败|屏蔽|No|Blocked) ]]; then
+            st_badge="${C_RED}✗ 屏蔽/失败${C_RESET}"
+        else
+            st_badge="${C_GRAY}$st${C_RESET}"
+        fi
+        printf "  • %-10s: %b\n" "$m_name" "$st_badge"
+    done
+    echo ""
+
+    # 邮件与 DNS 黑名单
+    echo -e "${C_GRAY}── ${C_CYAN}📬 邮件连通与 DNS 黑名单${C_RESET} ${C_GRAY}───────────────────────────────────────────${C_RESET}"
+    local p25
+    p25=$(jq -r '.Mail.Port25 // "null"' "$f")
+    if [[ "$p25" == "true" ]]; then
+        echo -e "  • 25 端口出站 (Port 25): ${C_GREEN}✓ 开放${C_RESET}"
+    elif [[ "$p25" == "false" ]]; then
+        echo -e "  • 25 端口出站 (Port 25): ${C_RED}✗ 拦截/封禁${C_RESET}"
+    else
+        echo -e "  • 25 端口出站 (Port 25): ${C_GRAY}未检出${C_RESET}"
     fi
 
-    print_module_header "📋 历史原始存档列表 ($TARGET_PROTO)"
+    local bl_total bl_clean bl_blk
+    bl_total=$(jq -r '.Mail.DNSBlacklist.Total // 0' "$f")
+    bl_clean=$(jq -r '.Mail.DNSBlacklist.Clean // 0' "$f")
+    bl_blk=$(jq -r '.Mail.DNSBlacklist.Blacklisted // 0' "$f")
+    if (( bl_blk == 0 )); then
+        echo -e "  • DNS 黑名单拦截       : ${C_GREEN}0 / $bl_total 数据库 (全部干净通过)${C_RESET}"
+    else
+        echo -e "  • DNS 黑名单拦截       : ${C_RED}$bl_blk / $bl_total 数据库检出拦截！${C_RESET}"
+    fi
+    echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}"
 
-    local max_show=15
-    local show_count=$(( ${#files[@]} < max_show ? ${#files[@]} : max_show ))
-
-    for ((i=0; i<show_count; i++)); do
-        local f="${files[$i]}"
-        local dt
-        dt=$(fmt_timestamp "$(basename "$f" .json)")
-        local sz
-        sz=$(du -h "$f" | awk '{print $1}')
-        local ip
-        ip=$(jq -r '.Head.IP // "null"' "$f" 2>/dev/null)
-        printf "  [%2d] %-20s (大小: %-4s, IP: %s)\n" "$((i + 1))" "$dt" "$sz" "$ip"
-    done
-
-    echo -e "\n输入编号查看详情 JSON，或输入 0 返回:"
-    echo -ne "${C_CYAN}请选择: ${C_RESET}"
-    read -r idx_opt
-
-    if [[ "$idx_opt" =~ ^[0-9]+$ ]] && (( idx_opt >= 1 && idx_opt <= show_count )); then
-        local chosen="${files[$((idx_opt - 1))]}"
+    echo -ne "操作: ${C_CYAN}[j]${C_RESET} 查看底层原始 JSON | ${C_CYAN}[0/回车]${C_RESET} 返回列表: "
+    read -r sub_view
+    if [[ "$sub_view" == "j" || "$sub_view" == "J" ]]; then
         clear
-        echo -e "${C_BOLD}文件路径: $chosen${C_RESET}\n"
+        echo -e "${C_BOLD}文件路径: $f${C_RESET}\n"
         if command -v jq >/dev/null 2>&1; then
-            jq . "$chosen" | head -n 80
-            echo -e "\n${C_GRAY}(仅展示前 80 行，完整内容位于 $chosen)${C_RESET}"
+            jq . "$f" | head -n 80
+            echo -e "\n${C_GRAY}(展示前 80 行，完整文件位于 $f)${C_RESET}"
         else
-            cat "$chosen"
+            cat "$f"
         fi
         echo ""
         read -r -p "按回车键返回..."
     fi
 }
 
-# ==============================================================================
-# 模块 u: 更新 IPQuality 脚本 (update_script)
-# ==============================================================================
-update_script() {
+view_archives() {
     clear
-    echo -e "${C_CYAN}${C_BOLD}正在从官方源更新 IPQuality 检测引擎...${C_RESET}\n"
-    local tmp_file="$IPQA_HOME/ip.sh.tmp"
-    if curl -sL https://IP.Check.Place -o "$tmp_file" || curl -sL https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_file"; then
-        mv "$tmp_file" "$IP_SCRIPT"
-        sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
-        chmod +x "$IP_SCRIPT"
-        local new_ver
-        new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" | cut -d '"' -f 2)
-        echo -e "${C_GREEN}✔ 更新完成！当前版本: ${C_CYAN}${new_ver:-未知}${C_RESET}\n"
-        log_msg "INFO" "更新 IPQuality 脚本成功，版本: $new_ver"
-    else
-        rm -f "$tmp_file"
-        echo -e "${C_RED}❌ 下载失败，请检查网络连接${C_RESET}\n"
+    print_module_header "📋 历史存档图表快照查看"
+
+    # 收集 v4 和 v6 存档 (双栈一键展示，无需选择)
+    local all_items=() # 元素格式: "timestamp|proto|filepath"
+    for f in "$V4_DIR"/*.json; do
+        [[ -f "$f" ]] && all_items+=("$(basename "$f" .json)|IPv4|$f")
+    done
+    for f in "$V6_DIR"/*.json; do
+        [[ -f "$f" ]] && all_items+=("$(basename "$f" .json)|IPv6|$f")
+    done
+
+    if [[ ${#all_items[@]} -eq 0 ]]; then
+        echo -e "${C_YELLOW}暂无任何历史存档数据，请先执行一次检测 (选项 8)${C_RESET}\n"
+        read -r -p "按回车键返回..."
+        return
     fi
-    read -r -p "按回车键返回..."
+
+    # 按时间降序排序 (最新在前)
+    local sorted_items=()
+    mapfile -t sorted_items < <(printf "%s\n" "${all_items[@]}" | sort -r)
+
+    local max_show=15
+    local show_count=$(( ${#sorted_items[@]} < max_show ? ${#sorted_items[@]} : max_show ))
+
+    echo -e "最近检测归档列表 (双栈合并，展示最新 $show_count 份):\n"
+    for ((i=0; i<show_count; i++)); do
+        local item="${sorted_items[$i]}"
+        IFS='|' read -r i_ts i_proto i_file <<< "$item"
+        local dt
+        dt=$(fmt_timestamp "$i_ts")
+        local sz
+        sz=$(du -h "$i_file" | awk '{print $1}')
+        local ip
+        ip=$(jq -r '.Head.IP // "未知"' "$i_file" 2>/dev/null)
+        local loc_c
+        loc_c=$(jq -r '.Info.Region.Name // ""' "$i_file" 2>/dev/null)
+        [[ "$loc_c" == "null" ]] && loc_c=""
+
+        local proto_color="$C_GREEN"
+        [[ "$i_proto" == "IPv6" ]] && proto_color="$C_CYAN"
+
+        printf "  ${C_BOLD}[%2d]${C_RESET} ${proto_color}[%-4s]${C_RESET} %-19s │ %-18s │ %s %s\n" \
+            "$((i + 1))" "$i_proto" "$dt" "${ip:0:18}" "$sz" "${loc_c:+($loc_c)}"
+    done
+
+    echo ""
+    echo -ne "${C_CYAN}请输入存档编号查看图形化快照 (输入 0 返回): ${C_RESET}"
+    read -r idx_opt
+
+    if [[ "$idx_opt" =~ ^[0-9]+$ ]] && (( idx_opt >= 1 && idx_opt <= show_count )); then
+        local chosen_item="${sorted_items[$((idx_opt - 1))]}"
+        IFS='|' read -r c_ts c_proto c_file <<< "$chosen_item"
+        render_archive_snapshot "$c_file" "$c_proto"
+    fi
 }
 
 # ==============================================================================
-# 模块 c: 清理历史数据 (cleanup_data)
+# 模块 9: 清理历史数据 (cleanup_data)
 # ==============================================================================
 cleanup_data() {
     clear
@@ -1268,6 +1432,59 @@ cleanup_data() {
         *) echo -e "${C_RED}无效选项${C_RESET}" ;;
     esac
     read -r -p "按回车键返回..."
+}
+
+# ==============================================================================
+# 模块 x: 卸载 IPQA (uninstall_ipqa)
+# ==============================================================================
+uninstall_ipqa() {
+    clear
+    print_module_header "🧹 卸载 IP 质量存档监测系统 (IPQA)"
+    echo -e "${C_YELLOW}${C_BOLD}⚠️  警告: 即将执行 IPQA 监测系统卸载流程！${C_RESET}\n"
+    echo -e "卸载操作将执行:"
+    echo -e "  1. 自动移除 crontab 中所有 IPQA 定时检测任务"
+    echo -e "  2. 自动删除系统全局命令软链接 (/usr/local/bin/ipqa, ~/.local/bin/ipqa)"
+    echo -e "  3. 可选：彻底清除所有历史存档数据与配置 (~/.ipqa)\n"
+
+    echo -ne "${C_RED}确认要卸载 IPQA 吗? [y/N]: ${C_RESET}"
+    read -r confirm_un
+    if [[ "$confirm_un" != "y" && "$confirm_un" != "Y" ]]; then
+        echo -e "\n${C_GRAY}已取消卸载。${C_RESET}"
+        sleep 1
+        return
+    fi
+
+    echo -e "\n${C_CYAN}▶ [1/3] 正在清理定时任务...${C_RESET}"
+    local remaining
+    remaining=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
+    if [[ -n "$remaining" ]]; then
+        echo "$remaining" | crontab -
+    else
+        crontab -r 2>/dev/null || true
+    fi
+    echo -e "${C_GREEN}✔ 定时检测任务已成功移除${C_RESET}"
+
+    echo -e "\n${C_CYAN}▶ [2/3] 正在删除全局命令软链接...${C_RESET}"
+    local links=("/usr/local/bin/ipqa" "$HOME/.local/bin/ipqa" "$HOME/bin/ipqa")
+    for link in "${links[@]}"; do
+        if [[ -L "$link" || -f "$link" ]]; then
+            rm -f "$link" 2>/dev/null || sudo rm -f "$link" 2>/dev/null || true
+            echo -e "${C_GREEN}✔ 已删除 $link${C_RESET}"
+        fi
+    done
+
+    echo -e "\n${C_CYAN}▶ [3/3] 数据与配置目录清理${C_RESET}"
+    echo -ne "${C_YELLOW}是否删除所有历史检测存档与配置 ($IPQA_HOME)? [y/N]: ${C_RESET}"
+    read -r rm_data
+    if [[ "$rm_data" == "y" || "$rm_data" == "Y" ]]; then
+        rm -rf "$IPQA_HOME"
+        echo -e "${C_GREEN}✔ 已彻底删除 $IPQA_HOME${C_RESET}"
+    else
+        echo -e "${C_GRAY}ℹ️ 已保留历史存档与配置目录: $IPQA_HOME${C_RESET}"
+    fi
+
+    echo -e "\n${C_GREEN}${C_BOLD}✔ IPQA 已完全卸载！感谢使用。${C_RESET}\n"
+    exit 0
 }
 
 # ==============================================================================
@@ -1360,7 +1577,7 @@ render_panel() {
     echo -e "  ${C_CYAN}⏰ 上次检测:${C_RESET} ${last_check}"
     echo -e "  ${C_CYAN}📦 历史存档:${C_RESET} IPv4: ${C_GREEN}${count_v4}${C_RESET} 份  ${C_GRAY}│${C_RESET}  IPv6: ${C_GREEN}${count_v6}${C_RESET} 份"
     echo -e "  ${C_CYAN}📅 时间跨度:${C_RESET} ${time_span}"
-    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored}"
+    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored} ${C_GRAY}(每天自动同步核心)${C_RESET}"
     echo ""
     echo -e "${C_GRAY}── ${C_YELLOW}⚠️  最近风险变化提醒${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
 
@@ -1387,12 +1604,12 @@ render_panel() {
 
     echo ""
     echo -e "${C_GRAY}── ${C_CYAN}📋 功能菜单导航${C_RESET} ${C_GRAY}───────────────────────────────────────────────────${C_RESET}"
-    echo -e "  ${C_BOLD}[1]${C_RESET} 📊 IP 类型属性变化       ${C_BOLD}[7]${C_RESET} ⚙️  配置定时任务"
-    echo -e "  ${C_BOLD}[2]${C_RESET} 📈 风险评分趋势图        ${C_BOLD}[8]${C_RESET} 🔄 立即执行检测"
-    echo -e "  ${C_BOLD}[3]${C_RESET} 🔬 风险因子综合矩阵      ${C_BOLD}[9]${C_RESET} 📋 查看原始存档"
-    echo -e "  ${C_BOLD}[4]${C_RESET} 🎬 流媒体与AI解锁        ${C_BOLD}[u]${C_RESET} 🔃 更新检测核心"
-    echo -e "  ${C_BOLD}[5]${C_RESET} 📬 邮局连通性状态        ${C_BOLD}[c]${C_RESET} 🗑️  清理历史数据"
-    echo -e "  ${C_BOLD}[6]${C_RESET} 🚫 黑名单历史趋势        ${C_BOLD}[0]${C_RESET} 🚪 退出程序"
+    echo -e "  ${C_BOLD}[1]${C_RESET} 📊 IP 类型属性变动       ${C_BOLD}[6]${C_RESET} 📋 历史存档图表快照"
+    echo -e "  ${C_BOLD}[2]${C_RESET} 📈 综合风险评分图        ${C_BOLD}[7]${C_RESET} ⚙️  配置定时任务"
+    echo -e "  ${C_BOLD}[3]${C_RESET} 🔬 风险因子综合矩阵      ${C_BOLD}[8]${C_RESET} 🔄 立即执行检测"
+    echo -e "  ${C_BOLD}[4]${C_RESET} 🎬 流媒体与AI解锁        ${C_BOLD}[9]${C_RESET} 🗑️  清理历史数据"
+    echo -e "  ${C_BOLD}[5]${C_RESET} 📬 邮件与黑名单监测      ${C_BOLD}[x]${C_RESET} 🧹 彻底卸载系统"
+    echo -e "                                ${C_BOLD}[0]${C_RESET} 🚪 退出程序"
     echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}"
 }
 
@@ -1409,17 +1626,16 @@ main_loop() {
             2) show_risk_score ;;
             3) show_risk_factor ;;
             4) show_media_unlock ;;
-            5) show_mail_status ;;
-            6) show_blacklist ;;
+            5) show_mail_and_blacklist ;;
+            6) view_archives ;;
             7) setup_cron ;;
             8)
                 clear
                 run_check false
                 read -r -p "检测完毕，按回车键返回主菜单..."
                 ;;
-            9) view_archives ;;
-            u|U) update_script ;;
-            c|C) cleanup_data ;;
+            9) cleanup_data ;;
+            x|X) uninstall_ipqa ;;
             0|q|Q)
                 echo -e "\n感谢使用 IPQA，再见！"
                 exit 0
@@ -1457,6 +1673,9 @@ case "$1" in
             echo "Latest Time: $(basename "$latest" .json)"
         fi
         ;;
+    --uninstall)
+        uninstall_ipqa
+        ;;
     --help|-h)
         echo "IP Quality Archive (IPQA) $IPQA_VERSION"
         echo "用法: ipqa [选项]"
@@ -1464,8 +1683,9 @@ case "$1" in
         echo "选项:"
         echo "  (无参数)      启动交互式终端图形界面 (TUI)"
         echo "  --check       立即执行一次检测并生成存档与告警"
-        echo "  --cron        静默模式执行检测 (专用于 crontab 定时任务)"
+        echo "  --cron        静默模式执行检测 (专用于 crontab 定时任务，自动同步最新核心)"
         echo "  --status      查看当前存档与状态概况"
+        echo "  --uninstall   干净卸载 IPQA 并清理任务与软链接"
         echo "  --help, -h    显示本帮助信息"
         ;;
     *)

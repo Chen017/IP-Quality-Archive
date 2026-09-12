@@ -17,9 +17,71 @@ C_BLUE="\033[34m"
 C_CYAN="\033[36m"
 C_GRAY="\033[90m"
 
+ACTION="install"
 NON_INTERACTIVE=false
 INSTALL_DIR="${IPQA_DIR:-$HOME/.ipqa}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# 卸载处理函数
+do_uninstall() {
+    echo -e "${C_CYAN}${C_BOLD}"
+    echo "╔══════════════════════════════════════════════════════════════════╗"
+    echo "║             🧹 IP 质量存档监测系统 (IPQA) 卸载程序               ║"
+    echo "╚══════════════════════════════════════════════════════════════════╝"
+    echo -e "${C_RESET}"
+    echo -e "${C_YELLOW}${C_BOLD}⚠️  警告: 即将执行 IPQA 监测系统卸载流程！${C_RESET}\n"
+
+    if [[ "$NON_INTERACTIVE" == "false" ]]; then
+        echo -ne "${C_RED}确认要卸载 IPQA 吗? [y/N]: ${C_RESET}"
+        read -r confirm_un
+        if [[ "$confirm_un" != "y" && "$confirm_un" != "Y" ]]; then
+            echo -e "\n${C_GRAY}已取消卸载。${C_RESET}"
+            exit 0
+        fi
+    fi
+
+    echo -e "\n${C_CYAN}▶ [1/3] 正在清理定时任务...${C_RESET}"
+    if command -v crontab >/dev/null 2>&1; then
+        local remaining
+        remaining=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
+        if [[ -n "$remaining" ]]; then
+            echo "$remaining" | crontab -
+        else
+            crontab -r 2>/dev/null || true
+        fi
+        echo -e "${C_GREEN}✔ 定时检测任务已成功移除${C_RESET}"
+    else
+        echo -e "${C_GRAY}未安装 crontab，跳过${C_RESET}"
+    fi
+
+    echo -e "\n${C_CYAN}▶ [2/3] 正在删除全局命令软链接...${C_RESET}"
+    local links=("/usr/local/bin/ipqa" "$HOME/.local/bin/ipqa" "$HOME/bin/ipqa")
+    for link in "${links[@]}"; do
+        if [[ -L "$link" || -f "$link" ]]; then
+            rm -f "$link" 2>/dev/null || sudo rm -f "$link" 2>/dev/null || true
+            echo -e "${C_GREEN}✔ 已删除 $link${C_RESET}"
+        fi
+    done
+
+    echo -e "\n${C_CYAN}▶ [3/3] 数据与配置目录清理${C_RESET}"
+    local rm_data="n"
+    if [[ "$NON_INTERACTIVE" == "true" ]]; then
+        rm_data="y"
+    else
+        echo -ne "${C_YELLOW}是否删除所有历史检测存档与配置 ($INSTALL_DIR)? [y/N]: ${C_RESET}"
+        read -r rm_data
+    fi
+
+    if [[ "$rm_data" == "y" || "$rm_data" == "Y" ]]; then
+        rm -rf "$INSTALL_DIR"
+        echo -e "${C_GREEN}✔ 已彻底删除 $INSTALL_DIR${C_RESET}"
+    else
+        echo -e "${C_GRAY}ℹ️ 已保留历史存档与配置目录: $INSTALL_DIR${C_RESET}"
+    fi
+
+    echo -e "\n${C_GREEN}${C_BOLD}✔ IPQA 已完全卸载！感谢使用。${C_RESET}\n"
+    exit 0
+}
 
 # 解析参数
 while [[ $# -gt 0 ]]; do
@@ -32,11 +94,19 @@ while [[ $# -gt 0 ]]; do
             INSTALL_DIR="$2"
             shift 2
             ;;
+        --uninstall|uninstall)
+            ACTION="uninstall"
+            shift
+            ;;
         -h|--help)
-            echo "IPQA 安装脚本使用说明:"
-            echo "  bash install.sh [-y] [-d /path/to/dir]"
-            echo "  -y, --yes    非交互式安装，全部采用默认设置"
-            echo "  -d, --dir    指定安装目录 (默认: ~/.ipqa)"
+            echo "IPQA 安装与管理脚本使用说明:"
+            echo "  bash install.sh [选项]"
+            echo ""
+            echo "选项:"
+            echo "  -y, --yes          非交互式操作，全部采用默认确认"
+            echo "  -d, --dir <路径>   指定安装/数据目录 (默认: ~/.ipqa)"
+            echo "  --uninstall        干净卸载 IPQA，清理定时任务、命令软链接与数据"
+            echo "  -h, --help         显示本帮助信息"
             exit 0
             ;;
         *)
@@ -44,6 +114,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$ACTION" == "uninstall" ]]; then
+    do_uninstall
+fi
 
 echo -e "${C_CYAN}${C_BOLD}"
 echo "╔══════════════════════════════════════════════════════════════════╗"

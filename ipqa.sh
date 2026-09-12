@@ -648,8 +648,104 @@ load_archive_files() {
         count=${#filtered[@]}
     fi
 
-    # 如果选中的点多于 max_points，等间距抽样，且必须包含最后一个点
+    # 如果选中的点多于 max_points，采用【变化感知关键帧自适应降采样】：
+    # 优先锁定状态发生突变的关键点 (Keyframes) 及首尾点，剩余槽位等间距补充，确保突变 100% 呈现且时间轴均匀
     if (( count > max_points && max_points > 0 )); then
+        local fingerprints=()
+        mapfile -t fingerprints < <(
+            jq -r '[
+                .Info.Type,
+                .Type,
+                .Score,
+                .Factor,
+                .Media,
+                .Mail.Port25,
+                .Mail.DNSBlacklist.Blacklisted
+            ] | tostring' "${filtered[@]}" 2>/dev/null
+        )
+
+        if [[ ${#fingerprints[@]} -eq $count ]]; then
+            local is_key=()
+            for ((i=0; i<count; i++)); do is_key+=(0); done
+            is_key[0]=1
+            is_key[$((count - 1))]=1
+
+            local change_indices=()
+            for ((i=1; i<count; i++)); do
+                if [[ "${fingerprints[$i]}" != "${fingerprints[$((i - 1))]}" ]]; then
+                    change_indices+=("$i")
+                    is_key[$i]=1
+                fi
+            done
+
+            local selected_indices=()
+            for ((i=0; i<count; i++)); do
+                [[ ${is_key[$i]} -eq 1 ]] && selected_indices+=("$i")
+            done
+
+            local key_count=${#selected_indices[@]}
+            if (( key_count <= max_points )); then
+                # 变动点数量未达上限：按最大时间空隙插入过渡点，保证整体时间轴平滑均匀
+                local needed=$(( max_points - key_count ))
+                while (( needed > 0 )); do
+                    local max_gap=0
+                    local best_insert=-1
+                    for ((k=0; k<${#selected_indices[@]} - 1; k++)); do
+                        local idx_a=${selected_indices[$k]}
+                        local idx_b=${selected_indices[$((k + 1))]}
+                        local gap=$(( idx_b - idx_a ))
+                        if (( gap > max_gap && gap > 1 )); then
+                            max_gap=$gap
+                            best_insert=$(( idx_a + gap / 2 ))
+                        fi
+                    done
+                    [[ $best_insert -eq -1 || $max_gap -le 1 ]] && break
+                    is_key[$best_insert]=1
+                    selected_indices=()
+                    for ((i=0; i<count; i++)); do
+                        [[ ${is_key[$i]} -eq 1 ]] && selected_indices+=("$i")
+                    done
+                    needed=$(( needed - 1 ))
+                done
+            else
+                # 变动点数量超过上限：首尾锚定，中间变动点按时间轴等距精选
+                local mid_needed=$(( max_points - 2 ))
+                local mid_candidates=("${change_indices[@]}")
+                if [[ ${#mid_candidates[@]} -gt 0 && ${mid_candidates[-1]} -eq $((count - 1)) ]]; then
+                    unset 'mid_candidates[${#mid_candidates[@]}-1]'
+                    mid_candidates=("${mid_candidates[@]}")
+                fi
+                local mid_total=${#mid_candidates[@]}
+                local sampled_mid=()
+                if (( mid_total > mid_needed )); then
+                    for ((m=0; m<mid_needed; m++)); do
+                        local c_idx=$(( m * (mid_total - 1) / (mid_needed - 1) ))
+                        sampled_mid+=("${mid_candidates[$c_idx]}")
+                    done
+                else
+                    sampled_mid=("${mid_candidates[@]}")
+                fi
+
+                is_key=()
+                for ((i=0; i<count; i++)); do is_key+=(0); done
+                is_key[0]=1
+                is_key[$((count - 1))]=1
+                for s_idx in "${sampled_mid[@]}"; do
+                    is_key[$s_idx]=1
+                done
+                selected_indices=()
+                for ((i=0; i<count; i++)); do
+                    [[ ${is_key[$i]} -eq 1 ]] && selected_indices+=("$i")
+                done
+            fi
+
+            for idx in "${selected_indices[@]}"; do
+                printf "%s\n" "${filtered[$idx]}"
+            done
+            return
+        fi
+
+        # 回退保险：纯等间距采样
         local sampled=()
         for ((i=0; i<max_points; i++)); do
             local idx=$(( i * (count - 1) / (max_points - 1) ))

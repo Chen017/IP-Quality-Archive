@@ -1121,8 +1121,9 @@ render_media_unlock_table() {
                     printf "  %b   " "$SYM_DOT_GREEN"
                 fi
                 success_in_row=$((success_in_row + 1))
-            elif [[ "$status" =~ (仅自制|Originals|NF\.Only|仅网页|仅APP|WebOnly|APPOnly|待支持|Pending) ]]; then
+            elif [[ "$status" =~ (仅自制|Originals|NF\.Only|仅网页|仅APP|WebOnly|APPOnly|机房|IDC|待支持|Pending) ]]; then
                 printf "  %b   " "$SYM_DOT_YELLOW"
+                success_in_row=$((success_in_row + 1))
             elif [[ "$status" =~ (失败|屏蔽|No|Blocked|Block|Failed|中国|China|禁会员|NoPrem) ]]; then
                 printf "  %b   " "$SYM_DOT_RED"
             else
@@ -1573,8 +1574,12 @@ render_single_archive_card() {
         elif [[ "$st" =~ (仅APP|APPOnly) ]]; then
             st_badge="${C_YELLOW}⚠️ 仅APP${C_RESET}"
             [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
+        elif [[ "$st" =~ (机房|IDC) ]]; then
+            st_badge="${C_YELLOW}⚠️ 机房解锁${C_RESET}"
+            [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
         elif [[ "$st" =~ (待支持|Pending) ]]; then
             st_badge="${C_YELLOW}⏳ 待支持${C_RESET}"
+            [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
         elif [[ "$st" =~ (失败|屏蔽|No|Blocked|Block|Failed) ]]; then
             st_badge="${C_RED}✗ 屏蔽/失败${C_RESET}"
         elif [[ "$st" =~ (中国|China) ]]; then
@@ -1583,6 +1588,7 @@ render_single_archive_card() {
             st_badge="${C_RED}✗ 禁会员${C_RESET}"
         else
             st_badge="${C_GRAY}$st${C_RESET}"
+            [[ -n "$reg" ]] && st_badge+=" ${C_CYAN}[$reg]${C_RESET}"
         fi
         printf "    • %-10s: %b\n" "$m_name" "$st_badge"
     done

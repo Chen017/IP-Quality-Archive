@@ -2,31 +2,57 @@
 
 [![Bash](https://img.shields.io/badge/Language-Bash%204.0%2B-green.svg)](https://www.gnu.org/software/bash/)
 [![License](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](LICENSE)
-[![IPQuality](https://img.shields.io/badge/Detection%20Engine-IPQuality-orange.svg)](https://github.com/xykt/IPQuality)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20WSL-lightgrey.svg)](https://www.kernel.org/)
+[![Detection Engine](https://img.shields.io/badge/Detection%20Engine-IPQuality-orange.svg)](https://github.com/xykt/IPQuality)
 
-**IP 质量存档监测系统 (IPQA)** 是一个轻量、高效、基于 Bash 的 IP 质量历史归档与终端可视化监测工具。它以后台守护或定时任务的形式自动调用 [IPQuality](https://github.com/xykt/IPQuality) 检测引擎，对服务器的 IPv4 与 IPv6 网络质量、风险评分、流媒体解锁状态及邮局连通性进行定期采集与版本化存档，并通过丰富的终端图表（TUI）呈现历史趋势与波动，第一时间捕获 IP 属性漂移与风控降级。
+**IP 质量存档监测系统 (IPQA)** 是一套轻量、高效、无侵入、开箱即用的 Linux 终端 IP 质量历史归档与全方位可视化监测系统。
+
+基于 Bash 4.0+ 与 `jq` 构建，系统封装并深度增强了业界知名的 [IPQuality](https://github.com/xykt/IPQuality) 检测引擎。通过后台定时任务自动对服务器的 **IPv4 与 IPv6** 双栈网络质量、权威风控评分、5 大数据库 IP 类型属性、流媒体/AI 解锁状态及邮件黑名单进行周期化体检与 JSON 结构化版本存档。借助沉浸式终端界面（TUI），直观呈现历史趋势矩阵，并在第一时间捕捉 IP 属性漂移、解锁降级与风控异常。
 
 ---
 
 ## ✨ 核心特性
 
-- ⚡ **双栈一体化直出**：无需繁琐选择 v4 还是 v6，所有分析模块与历史存档一键同时输出 IPv4 与 IPv6（若有）的全部检测与图表，省时省力。
-- 📊 **五大数据分析模块**：
-  1. **IP 类型属性变动**：追踪原生/广播属性及权威数据库（IPinfo, ipregistry, AbuseIPDB, IP2LOCATION）的使用类型变迁（家宽/商业/机房）。
-  2. **综合风险评分图**：水平彩色柱状图直观展示各大风控引擎（SCAMALYTICS, IP2LOCATION, IPQS, AbuseIPDB 等）评分走势与等级划分。
-  3. **风险因子综合矩阵**：Proxy / Tor / VPN / Server / Abuser / Robot 检出热力图与历史深钻。
-  4. **流媒体与 AI 解锁**：TikTok, Disney+, Netflix, YouTube, Amazon PV, Reddit, ChatGPT 解锁历史点阵、地区漂移追踪与解锁稳定性分析。
-  5. **邮件与黑名单监测**：深度合并 25 端口出站能力、国内外 12 家主流邮箱服务器连通性矩阵及 DNSBL 全局 400+ 数据库拦截深度趋势。
-- 📋 **图形化存档快照**：告别枯燥难读的纯 JSON！查看历史存档时直接输出结构化、图形化卡片，展示 IP 详情、风险评分条、因子徽标及解锁状态，并提供按键查看原始 JSON 功能。
-- 🔄 **每日自动同步核心**：免去繁琐的手动维护，系统每天自动检测并静默拉取上游最新检测引擎核心，保证风控检测规则时刻最新。
-- 🚨 **智能告警引擎**：实时捕捉流媒体送中/地区漂移、解锁降级、风险评分突增（默认 ≥ 10 分）、IP 类型变更及黑名单收录，并记录告警日志。
-- 🧹 **一键干净卸载**：支持交互菜单 `[x]` 或命令 `ipqa --uninstall` / `bash install.sh --uninstall`，干净清理 crontab 任务、系统软链接与数据，不留系统垃圾。
+- ⚡ **双栈一体化直出**：告别繁琐的手动切换！所有分析模块、历史对比与存档卡片默认同时输出 **IPv4 与 IPv6**（若节点支持），一览无余。
+- 🏷️ **全维度 5 大数据库 IP 类型矩阵**：
+  - 深度整合 **IPinfo、ipregistry、ipapi、IP2Location、AbuseIPDB** 5 大权威数据库。
+  - 同步追踪「**使用类型 (Usage)**」与「**公司类型 (Company)**」双重维度属性（如 ISP、Hosting、Business、Residential 等）。
+  - 基于权威多库地理位置一致性，精准诊断「**原生 IP (Geo-consistent)**」与「**广播/机房 IP (Geo-discrepant)**」。
+- 📈 **权威风控评分水平趋势图**：
+  - 支持 **SCAMALYTICS、IP2LOCATION、AbuseIPDB、IPQS、ipapi、DBIP** 6 大主流风控平台。
+  - 0-100 阶梯色彩水平进度条，分级提示低风险、中风险、高风险与极高风险。
+- 🔬 **9 大引擎 6 维风险因子热力矩阵**：
+  - 全面检出 **Proxy / Tor / VPN / Server / Abuser / Robot** 6 大核心风险标记。
+  - 汇总 9 家风控引擎历史检出点阵，并以时间线形式展示长期安全性综合评级。
+- 🎬 **流媒体与 AI 解锁历史 & 地区漂移监控**：
+  - 覆盖 **YouTube、Netflix、Disney+、TikTok、ChatGPT、Reddit、Amazon Prime Video**。
+  - 三态高亮标注：🟢 **原生解锁**、🟡 **DNS 分流解锁 / 仅自制剧 / 机房解锁 / 仅网页**、🔴 **屏蔽/失败/受限**。
+  - 独家上游补丁修复：解决原版脚本在部分无 dig 环境或超时情况下将原生解锁误判为 DNS 解锁的缺陷。
+  - 自动检测并预警地区漂移（如 Netflix 节点送中、YouTube 锁区变动）。
+- 📬 **邮件 25 端口出站与全球 DNSBL 黑名单**：
+  - 实时检测 IDC 是否封禁 TCP 25 端口出站能力。
+  - 追踪国内外 12 家主流邮局服务连通性矩阵及全球 400+ DNS 反垃圾黑名单收录拦截趋势。
+- 📋 **可视化历史快照卡片**：
+  - 将冰冷的 JSON 数据一键转化为设计精致的终端快照卡片，包含 ASN、地理信息、5 库属性表格、风控条、因子徽标及流媒体状态。
+  - 支持随时按 `j` 键调出 `jq` 交互查看原始底层数据。
+- ⏰ **精准对齐北京时间的定时任务 (Cron)**：
+  - 支持 **每天一次 / 每 3 天一次 / 每 7 天一次** 或自定义 Cron 表达式。
+  - **智能时区换算**：无论服务器位于 UTC、美西、美东、欧洲还是日本，系统自动换算本机时区，确保在**北京时间凌晨 04:00 (UTC+8)** 准时静默体检。
+- 🔄 **每日 24h 自动同步与核心热修复**：
+  - 每天首次运行时自动从 GitHub 拉取最新主程序并同步最新检测引擎，热打补丁（IP2Location 公司类型补全、DNS 误判修复）。
+- 🚨 **智能异常波动告警**：
+  - 自动比对相邻存档，捕获评分骤增（≥10分）、流媒体掉解锁/送中、IP 属性漂移、黑名单新增。
+  - 控制台顶部直观提示最近告警，并完整写入 `~/.ipqa/data/alerts.log`。
+- 🧹 **无残留数据清理与一键彻底卸载**：
+  - 支持按天数（30/90/180天）或保留最新 N 份存档清理历史数据。
+  - 交互式 `[x]` 或命令行 `ipqa --uninstall` 干净移除定时任务、系统软链接与数据目录。
 
 ---
 
 ## 🖥️ 终端控制台预览
 
-```text
+### 1. 主控制面板 (TUI Dashboard)
+
 ```text
 ══════════════════════════════════════════════════════════════════════
    🔍 IP 质量存档监测系统 (IPQA)  v1.0.0
@@ -34,14 +60,15 @@
 
   📡 节点网络: 38.244.12.34 (IPv4)  │  2602:f656:1::2 (IPv6)
   🏢 归属信息: AS1054  │  📍 Los Angeles, United States of America
-  ⏰ 上次检测: 2026-09-12 08:30:00
-  📦 历史存档: IPv4: 48 份  │  IPv6: 48 份  (08-01 ~ 09-12)
-  🔄 定时检测: 每 6 小时 (每天自动同步核心)
+  ⏰ 上次检测: 2026-09-12 04:00:00
+  📦 历史存档: IPv4: 30 份  │  IPv6: 30 份
+  📅 时间跨度: 2026-08-14 ~ 2026-09-12
+  🔄 定时检测: 开启 [每天 (北京 04:00)] (每天自动同步主程序与核心)
 
 ── ⚠️  最近风险变化提醒 ───────────────────────────────────────────────
-  • [09-11] YouTube 地区从 [US] 变为 [CN]
-  • [09-10] Netflix 解锁状态发生降级: [解锁] 变为 [仅自制]
-  • [09-08] AbuseIPDB 风险评分大幅上升 +15 (0 -> 15)
+  • [09-11] YouTube 地区从 [US] 变为 [HK]
+  • [09-08] Netflix 解锁状态发生降级: [解锁] 变为 [仅自制]
+  • [09-02] AbuseIPDB 风险评分大幅上升 +15 (0 -> 15)
 
 ── 📋 功能菜单导航 ───────────────────────────────────────────────────
   [1] 📊 IP 类型属性变动       [6] 📋 历史存档图表快照
@@ -52,183 +79,240 @@
 ──────────────────────────────────────────────────────────────────────
 ```
 
----
+### 2. IP 类型属性变动表 (模块 1 预览)
 
-## 🚀 快速安装与更新
-
-### 方式一：一键自动安装 (推荐)
-
-在终端中执行以下命令（适用于 Debian / Ubuntu / CentOS / RHEL / Alpine / Arch / Fedora 等）：
-
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/install.sh)
+```text
+▶ IPv4 IP 类型属性变化分析:
+  数据库 / 维度 │ 09-07    │ 09-08    │ 09-09    │ 09-10    │ 09-11    │ 09-12    │ 历史稳定性
+  ──────────────────────────────────────────────────────────────────────────────────────────
+  原生/广播     │ 原生IP   │ 原生IP   │ 原生IP   │ 原生IP   │ 原生IP   │ 原生IP   │ ✅ 保持稳定
+  IPinfo (使用) │ isp      │ isp      │ isp      │ isp      │ isp      │ isp      │ ✅ 保持稳定
+  ipreg  (使用) │ isp      │ isp      │ isp      │ isp      │ isp      │ isp      │ ✅ 保持稳定
+  ipapi  (使用) │ hosting  │ hosting  │ hosting  │ hosting  │ hosting  │ hosting  │ ✅ 保持稳定
+  IP2L   (使用) │ isp      │ isp      │ isp      │ isp      │ isp      │ isp      │ ✅ 保持稳定
+  Abuse  (使用) │ isp      │ isp      │ isp      │ isp      │ isp      │ isp      │ ✅ 保持稳定
+  IPinfo (公司) │ isp      │ isp      │ isp      │ isp      │ isp      │ isp      │ ✅ 保持稳定
+  ipreg  (公司) │ hosting  │ hosting  │ hosting  │ hosting  │ hosting  │ hosting  │ ✅ 保持稳定
+  ipapi  (公司) │ hosting  │ hosting  │ hosting  │ hosting  │ hosting  │ hosting  │ ✅ 保持稳定
+  IP2L   (公司) │ isp      │ isp      │ isp      │ isp      │ isp      │ isp      │ ✅ 保持稳定
 ```
 
-或如果已克隆本仓库：
+### 3. 历史存档图形化快照卡片 (模块 6 预览)
 
-```bash
-bash install.sh
-```
-
-### 方式二：一键无损在线更新 (已安装用户)
-
-如果系统已安装过 IPQA，随时可通过以下任一命令进行一键平滑升级，系统将**自动无损保留历史存档、配置文件及现有的定时检测任务**：
-
-```bash
-ipqa --update
-# 或再次执行在线安装脚本，脚本将自动识别并转入平滑更新流程：
-bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/install.sh)
-```
-
-### 方式三：非交互式无人值守安装
-
-```bash
-bash install.sh -y
-```
-
-### 方式四：一键干净卸载
-
-如果需要卸载 IPQA，只需执行：
-
-```bash
-ipqa --uninstall
-# 或通过安装脚本一键卸载：
-bash install.sh --uninstall
-```
-
-安装完成后，可直接在终端中输入 `ipqa` 调出控制台。
-
----
-
-## 📖 使用指南
-
-### 1. 启动交互式终端界面
-
-```bash
-ipqa
-```
-
-在菜单中直接输入数字 `1-9`、`x` 或 `0` 即可快速查看对应图表与执行操作。
-
-### 2. 命令行快捷操作
-
-| 命令 | 描述 |
-| --- | --- |
-| `ipqa` | 启动交互式 TUI 监控面板 |
-| `ipqa --check` | 立即手动触发一次完整体检并存入历史记录（超 24h 自动同步核心） |
-| `ipqa --cron` | 静默后台执行体检（写入 log，供 crontab 专用，自动同步最新核心） |
-| `ipqa --status` | 查看当前存档总数与最新检测 IP 简报 |
-| `ipqa --update` | 一键从 GitHub 在线升级 IPQA 主程序并保留全部数据 |
-| `ipqa --uninstall` | 干净卸载 IPQA 并清理 crontab 任务与软链接 |
-| `ipqa --help` | 显示命令行帮助参数 |
-
----
-
-## 📊 图表与快照特性解析
-
-### 1. 📋 历史存档图表化快照
-在主菜单选择 `[6]` 后，系统双栈合并展示最近的检测历史记录，选中任一历史记录即可一次性呈现 IPv4 与 IPv6（若有）的图形化快照卡片：
 ```text
 ┌── [IPv4 检测快照卡片] ──────────────────────────────────────────┐
   📡 节点 IP  : 38.244.12.34 (IPv4)
   🏢 组织/ASN : AS1054 (US-Hosting)
   📍 地理位置 : Los Angeles, 美国
-  🏷️ 属性类型 : 原生IP │ IPinfo: ISP │ IP2Location: ISP
+  🌐 网络类型 : ● 原生IP
+  ── 🏷️ IP 类型属性 ──────────────────────────────────────────────────
+    数据库:   IPinfo      ipregistry  ipapi       IP2Location AbuseIPDB   
+    使用类型: isp         isp         hosting     isp         isp         
+    公司类型: isp         hosting     hosting     isp         
   ── 📊 权威风控评分 ─────────────────────────────────────────────────
     • SCAMALYTICS   ▏ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   0 低风险
     • IP2LOCATION   ▏ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   0 低风险
     • AbuseIPDB     ▏ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   0 低风险
+    • IPQS          ▏ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   0 低风险
   ── 🔬 核心安全因子 ─────────────────────────────────────────────────
-    Proxy: ● 正常   Tor: ● 正常   VPN: ● 正常   Server: ● 正常   Abuser: ● 正常
+    Proxy: ● 正常   Tor: ● 正常   VPN: ● 正常   Server: ● 正常   Abuser: ● 正常   Robot: ● 正常
   ── 🎬 流媒体与 AI 解锁 ─────────────────────────────────────────────
     • YouTube   : ✓ 解锁 [US]
-    • Netflix   : ✓ 解锁 [US]
-    • Disney+   : ✓ 解锁
-    • ChatGPT   : ✓ 解锁
+    • Netflix   : ⚡ DNS解锁 [US]
+    • Disney+   : ✓ 解锁 [US]
+    • TikTok    : ⚠️ 机房解锁 [US]
+    • ChatGPT   : ✓ 解锁 [US]
+    • Reddit    : ✗ 屏蔽/失败
   ── 📬 邮件连通与 DNS 黑名单 ─────────────────────────────────────────
     • 25 端口出站 (Port 25): ✓ 开放
     • DNS 黑名单拦截       : 0 / 400 数据库 (全部干净通过)
 └──────────────────────────────────────────────────────────────────────┘
 ```
-若该次检测包含 IPv6，紧随其后自动绘制对应的 IPv6 快照卡片。同时提供按键 `[j]` 随时调用 `jq` 交互查看原始底层 JSON。
-
-### 2. 📊 IP 类型属性变动
-按时间列对齐，对比 IPinfo、ipregistry、AbuseIPDB、IP2LOCATION 等数据库中的使用类型（家宽 / 商业 / 机房），快速定位何时被机房标记或判定广播 IP。IPv4 与 IPv6 自动分段展示。
-
-### 3. 📈 综合风险评分趋势图
-对 SCAMALYTICS、IP2LOCATION、IPQS、AbuseIPDB 进行 0-100 水平柱状图可视化，按绿、黄、红、紫四色阶标记风险等级。
-
-### 4. 🔬 风险因子综合矩阵与全量历史追踪
-自动展示 9 大风控引擎针对 Proxy、Tor、VPN、Server、Abuser、Robot 的点阵检出，并直接一次性展开各因子在时间线上的历史变化与综合表现评级，无需手动选择单项因子，IPv4 与 IPv6 均完整呈现：
-```text
-▶ IPv4 各风险因子历史检出趋势 (时间线):
-  风险因子 │  09-07  │  09-08  │  09-09  │  09-10  │  09-11  │  09-12  │ 历史综合表现
-  ─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────┼─────────────
-  Proxy    │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✅ 保持安全
-  Tor      │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✅ 保持安全
-  VPN      │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✅ 保持安全
-  Server   │  ✔ 安全 │ ⚠️ 1/9  │ ⚠️ 1/9  │ ⚠️ 1/9  │ ⚠️ 1/9  │ ⚠️ 1/9  │  ⚠️ 曾有检出
-  Abuser   │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✅ 保持安全
-  Robot    │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✔ 安全 │  ✅ 保持安全
-```
-
-### 5. 🎬 流媒体与 AI 解锁历史
-清晰显示主流流媒体的原生解锁（绿点）、DNS 解锁（橙点）、自制剧（黄点）与封锁（红点），并自动追踪地区漂移（如 Netflix/YouTube 地区变动）。
-
-### 6. 📬 邮件与黑名单深度监测
-合并展示 IDC 是否开放出站 25 端口、连接 12 家主流邮箱服务器状态矩阵，以及全局 400+ DNSBL 数据库的拦截数量与波动趋势。
 
 ---
 
-## ⚙️ 目录结构与配置
+## 🚀 快速安装与使用
 
-系统安装于 `~/.ipqa/` 目录下：
+### 方式一：一键自动安装 (推荐)
+
+在终端执行以下命令（适用于 Debian / Ubuntu / CentOS / Rocky / Alma / Alpine / Arch / Fedora 等系统）：
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/install.sh)
+```
+
+或如果已克隆本仓库到本地：
+
+```bash
+git clone https://github.com/Chen017/IP-Quality-Archive.git
+cd IP-Quality-Archive
+bash install.sh
+```
+
+### 方式二：非交互式无人值守安装 (自动化脚本专用)
+
+在脚本部署场景下，加上 `-y` 参数可实现全自动无人值守安装（默认配置每天北京时间凌晨 04:00 定时检测并立即运行初始归档）：
+
+```bash
+bash install.sh -y
+```
+
+### 方式三：平滑在线升级
+
+当有新版本发布时，直接运行以下命令即可无缝升级，**所有历史存档、配置文件与定时任务均会被 100% 完整保留**：
+
+```bash
+ipqa --update
+# 或者再次执行在线安装脚本，将自动检测并转入平滑更新模式：
+bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/install.sh)
+```
+
+### 方式四：一键彻底卸载
+
+如果您不再需要 IPQA，可通过以下任一命令一键干净卸载，自动清除定时任务、全局命令软链接并可选择性删除历史数据：
+
+```bash
+ipqa --uninstall
+# 或通过安装脚本卸载：
+bash install.sh --uninstall
+```
+
+---
+
+## 📖 命令行参数速查
+
+安装完成后，全局注册了 `ipqa` 命令：
+
+| 命令 / 参数 | 说明 | 适用场景 |
+| :--- | :--- | :--- |
+| `ipqa` | 启动交互式终端图形管理面板 (TUI) | 日常监控、查看图表、交互操作 |
+| `ipqa --check` | 立即前台触发一次完整检测并写入历史存档 | 手动测试、排查网络质量 |
+| `ipqa --cron` | 静默后台执行检测（自动同步最新核心，输出定向至日志） | `crontab` 专用自动调度 |
+| `ipqa --status` | 快速打印当前存档统计、最新 IP 及最近检测时间 | 命令行状态速查、健康检查 |
+| `ipqa --update` | 从 GitHub 在线拉取并更新 IPQA 主程序及检测核心 | 在线平滑升级 |
+| `ipqa --uninstall` | 交互式卸载 IPQA 并清理 crontab 任务与系统链接 | 干净卸载 |
+| `ipqa --help` / `-h` | 打印命令行帮助说明 | 查阅参数选项 |
+
+---
+
+## 🧭 功能模块深度解析
+
+### 1. 📊 IP 类型属性变动 (`[1]`)
+- 横向时间轴对比最近 8 次体检的 IP 属性变化。
+- 整合 **原生/广播判定** 及 **IPinfo、ipregistry、ipapi、IP2Location、AbuseIPDB** 的「使用类型」与「公司类型」。
+- 自动计算「历史稳定性」，若检测过程中发生 ISP 变更为 Hosting（例如机房重标）立即高亮提示。
+
+### 2. 📈 综合风险评分趋势图 (`[2]`)
+- 提取 **SCAMALYTICS、IP2LOCATION、AbuseIPDB、IPQS、ipapi、DBIP** 的历史评分。
+- 水平柱状图直观呈现，并以 🟢 0-25 安全、🟡 26-50 中等、🔴 51-75 风险、🟣 76-100 极高风险四色阶渲染。
+
+### 3. 🔬 风险因子综合矩阵 (`[3]`)
+- 深度挖掘 **Proxy / Tor / VPN / Server / Abuser / Robot** 6 大因子的检出状态。
+- 显示 9 家权威引擎对当前各因子的交叉检出比率（如 `0/9 正常` 或 `2/9 检出`）。
+- 历史时间线追踪每一个风险因子的综合安全评级（`保持安全` vs `曾有检出`）。
+
+### 4. 🎬 流媒体与 AI 解锁历史 (`[4]`)
+- 全面监测 TikTok、Disney+、Netflix、YouTube、Amazon Prime Video、Reddit、ChatGPT 等平台。
+- 动态区分 **原生解锁**（绿色 `●`）、**DNS 分流解锁**（黄色 `●` ⚡）、**仅自制剧**、**机房解锁**、**仅网页/仅APP** 及 **封锁屏蔽**（红色 `●`）。
+- 追踪地区代码漂移（如 `[US]` -> `[HK]`），及时告警 IP 送中或跨区。
+
+### 5. 📬 邮件连通与 DNS 黑名单 (`[5]`)
+- 检查出站 25 端口能力（许多云厂商默认拦截 TCP 25 出站）。
+- 矩阵化展示连接国内外主流邮件服务商（Gmail、Outlook、QQ 邮箱、163 等）的连通状态。
+- 统计全球 400+ DNS 反垃圾黑名单（DNSBL）的拦截计数与历史增减。
+
+### 6. 📋 历史存档图表快照 (`[6]`)
+- 双栈合并时间轴索引，输入序号一键查看对应时间的完整卡片快照。
+- 结构化排版：节点网络、ASN 组织、地理归属、原生/广播、5 大检测商表格、风控条、安全因子、解锁明细、邮件黑名单。
+- 提供 `[j]` 快捷键，直接调用 `jq` 交互查看该份快照对应的底层原生 JSON 数据。
+
+### 7. ⚙️ 配置定时任务 (`[7]`)
+- 提供三种精心调优的黄金周期：
+  - `[1]` 每天凌晨 4 点检测一次 (北京时间 04:00) **[推荐]**
+  - `[2]` 每 3 天检测一次 (北京时间 04:00)
+  - `[3]` 每 7 天检测一次 (北京时间 04:00)
+  - `[4]` 自定义输入任意 Cron 表达式
+  - `[5]` 关闭/移除定时任务
+- **时区自适应算法**：自动识别服务器时区偏移量，无论 VPS 设在哪个时区，生成的 Cron 时间均精准对应**北京时间 04:00**。
+
+### 8. 🔄 立即执行检测 (`[8]`)
+- 立即唤起 IPQuality 核心分别执行 IPv4 与 IPv6 完整检测。
+- 自动写入 JSON 存档，与上一次存档进行比对，若触发阈值立即追加告警日志并展示检测报告。
+
+### 9. 🗑️ 清理历史数据 (`[9]`)
+- 统计当前 IPv4 与 IPv6 存档所占空间及份数。
+- 支持按保留天数（30天/90天/180天）清理、按保留最新 N 份清理，或一键重置告警日志与存档数据。
+
+---
+
+## 📁 目录结构与配置文件
+
+IPQA 默认部署于用户目录下的 `~/.ipqa/`，结构极为清爽，无杂乱文件：
 
 ```text
 ~/.ipqa/
-├── ipqa.sh               # 主程序
-├── ip.sh                 # 本地缓存的 IPQuality 检测引擎
-├── config.sh             # 用户配置文件
+├── ipqa.sh               # IPQA 主程序 (终端 TUI 与 CLI 逻辑)
+├── ip.sh                 # IPQuality 检测引擎 (自动缓存与热修复)
+├── config.sh             # 用户自定义配置文件
+├── .last_core_update     # 每日核心自动同步时间戳记
 ├── data/
-│   ├── v4/               # IPv4 历史 JSON 存档 (YYYY-MM-DD_HHMMSS.json)
-│   ├── v6/               # IPv6 历史 JSON 存档
-│   └── alerts.log        # 异常告警日志 (YYYY-MM-DD HH:MM:SS|LEVEL|MSG|PROTO)
+│   ├── v4/               # IPv4 历史检测 JSON 存档 (YYYY-MM-DD_HHMMSS.json)
+│   ├── v6/               # IPv6 历史检测 JSON 存档
+│   └── alerts.log        # 异常风控与解锁告警日志
 └── logs/
-    └── ipqa.log          # 运行与 Cron 执行日志
+    └── ipqa.log          # 运行与 Cron 定时检测执行日志
 ```
 
 ### 配置文件 `config.sh`
 
-```bash
-# 检测间隔小时数
-CHECK_INTERVAL_HOURS=6
+可在 `~/.ipqa/config.sh` 中按需微调以下参数：
 
-# 是否检测 IPv6 (auto / true / false)
+```bash
+# 检测间隔基准 (小时)
+CHECK_INTERVAL_HOURS=24
+
+# 是否检测 IPv6 (auto: 自动探测 / true: 强制检测 / false: 仅 IPv4)
 HAS_V6="auto"
 
-# 风险评分突变告警阈值 (默认上升超过 10 分告警)
+# 风险评分突变告警阈值 (默认当评分较上次上升超过 10 分时触发告警)
 SCORE_DIFF_THRESHOLD=10
 
-# 期望的流媒体地区 (非期望地区时告警，留空则仅记录变化)
-EXPECTED_YOUTUBE_REGION="US"
-EXPECTED_NETFLIX_REGION="US"
+# 期望的流媒体地区 (当实际地区不符合时触发告警，留空则仅监测地区漂移)
+EXPECTED_YOUTUBE_REGION=""
+EXPECTED_NETFLIX_REGION=""
 
-# 最大保留存档数 (0 为永久保存)
+# 最大保留存档份数 (0 为永久保存，超出则自动滚动淘汰最旧存档)
 KEEP_MAX_ARCHIVES=0
 ```
 
 ---
 
-## 🛠️ 依赖说明
+## 🔧 系统依赖与环境支持
 
-- `bash 4.0+`
-- `jq` (自动通过系统包管理器安装)
-- `curl`
-- `cron` / `crontab`
+IPQA 安装脚本已内置主流 Linux 发行版的包管理器自动检测与依赖补齐机制：
+
+| 依赖组件 | 作用说明 | 缺失时安装策略 |
+| :--- | :--- | :--- |
+| `bash 4.0+` | 脚本运行基础（支持关联数组与高级字符串操作） | 现代 Linux 系统标配 |
+| `jq` | JSON 存档高效解析与数据抽取 | 通过 `apt` / `dnf` / `yum` / `pacman` / `apk` 自动安装 |
+| `curl` | 上游脚本拉取与网络质量探测 | 自动安装 |
+| `cron` / `crontab` | 定时检测任务调度 | 自动安装 |
+| `dnsutils` / `bind-utils` | `dig` 与 `nslookup`，保障原生 vs DNS 解锁诊断精确性 | 自动检测并提示/安装 |
+
+**经测试兼容的环境：**
+- Debian 10 / 11 / 12
+- Ubuntu 18.04 / 20.04 / 22.04 / 24.04
+- CentOS 7 / 8 / 9 Stream
+- Rocky Linux & AlmaLinux 8 / 9
+- Alpine Linux 3.16+
+- Arch Linux
+- Fedora 36+
+- Windows Subsystem for Linux (WSL / WSL2)
 
 ---
 
-## 📄 开源许可
+## 🤝 鸣谢与开源协议
 
-本项目遵循 [GNU General Public License v3.0](LICENSE)。
-检测引擎逻辑基于 [IPQuality (xykt/IPQuality)](https://github.com/xykt/IPQuality)。
+- 本项目采用 **[GNU General Public License v3.0](LICENSE)** 开源。
+- 核心检测引擎技术基于并致敬优秀的上游项目 **[IPQuality (xykt/IPQuality)](https://github.com/xykt/IPQuality)**。
+- 感谢所有为 IP 质量与网络流媒体解锁检测做出开源贡献的开发者。

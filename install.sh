@@ -315,17 +315,6 @@ fi
 
 if [[ "$IS_UPDATE" == "true" ]]; then
     echo -e "\n${C_GREEN}${C_BOLD}🎉 IPQA 已成功更新至最新版本！${C_RESET}"
-    if crontab -l 2>/dev/null | grep -qE "ipqa(\.sh)? --cron"; then
-        local_h=$(get_beijing_4am_local_hour)
-        CRON_BIN="$(command -v ipqa 2>/dev/null || echo "$INSTALL_DIR/ipqa.sh")"
-        existing=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
-        {
-            [[ -n "$existing" ]] && echo "$existing"
-            echo "# IPQA AUTO CHECK - DO NOT EDIT MANUALLY"
-            echo "0 $local_h * * * $CRON_BIN --cron >> $INSTALL_DIR/logs/ipqa.log 2>&1"
-        } | crontab -
-        echo -e "${C_GREEN}✔ 已自动清理旧版任务，应用新默认: 每天北京时间凌晨 04:00 (本机时间: $local_h:00, Cron: 0 $local_h * * *)${C_RESET}"
-    fi
     echo -e "${C_GREEN}✔ 历史存档与用户配置已完整保留${C_RESET}"
 else
     echo -e "\n${C_GREEN}${C_BOLD}🎉 IPQA 安装成功！${C_RESET}"

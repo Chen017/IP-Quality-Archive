@@ -117,6 +117,31 @@ pad_cell() {
     printf "%s%*s" "$text" "$pad" ""
 }
 
+fmt_type_badge() {
+    local val="$1"
+    local col_width="$2"
+    if [[ -z "$val" || "$val" == "null" || "$val" == "--" ]]; then
+        printf "%-${col_width}s" ""
+        return
+    fi
+    local bg="$BG_YELLOW"
+    if [[ "$val" =~ (机房|Hosting|Data Center|CDN|Transit) ]]; then
+        bg="$BG_RED"
+    elif [[ "$val" =~ (家宽|ISP|原生|Mobile|手机) ]]; then
+        bg="$BG_GREEN"
+    fi
+    local badge="${bg}${C_WHITE} ${val} ${C_RESET}"
+    local val_len
+    val_len=$(printf "%s" "$val" | wc -L)
+    local total_len=$(( val_len + 2 ))
+    local pad=$(( col_width - total_len ))
+    (( pad < 1 )) && pad=1
+    local spaces=""
+    for (( s=0; s<pad; s++ )); do spaces+=" "; done
+    echo -ne "${badge}${spaces}"
+}
+
+
 # 自动计算服务器当前时区下对应“北京时间凌晨 04:00”的小时数 (0-23)
 get_beijing_4am_local_hour() {
     local h
@@ -157,6 +182,14 @@ check_dependencies() {
     fi
 }
 
+patch_ip_script() {
+    [[ ! -f "$IP_SCRIPT" ]] && return
+    # 修复上游 ip.sh 未将 IP2Location 公司类型写入 JSON 的 bug
+    if ! grep -q 'Company: { IP2LOCATION' "$IP_SCRIPT" 2>/dev/null; then
+        sed -i '/Company: { ipapi:/a \type_updates+=".Type |= . * { Company: { IP2LOCATION: \\"$(clean_ansi "${ip2location[scomtype]:-null}")\\" } } | "' "$IP_SCRIPT" 2>/dev/null || true
+    fi
+}
+
 ensure_ip_script() {
     if [[ ! -f "$IP_SCRIPT" ]]; then
         echo -e "${C_CYAN}正在初始化并下载 IPQuality 上游脚本缓存...${C_RESET}"
@@ -172,6 +205,9 @@ ensure_ip_script() {
         fi
         sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
         chmod +x "$IP_SCRIPT"
+        patch_ip_script
+    else
+        patch_ip_script
     fi
     if [[ ! -f "$IP_SCRIPT" ]]; then
         echo -e "${C_RED}错误: 无法获取 IPQuality 脚本缓存 ($IP_SCRIPT)${C_RESET}"
@@ -200,6 +236,7 @@ auto_update_core_if_needed() {
             mv "$tmp_ip" "$IP_SCRIPT"
             sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
             chmod +x "$IP_SCRIPT"
+            patch_ip_script
             local new_ver
             new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
             log_msg "INFO" "自动更新核心成功，版本: ${new_ver:-未知}"
@@ -380,19 +417,34 @@ compare_and_alert() {
         add_alert "CRITICAL" "IP 原生/广播类型发生变化: [$old_type] -> [$new_type]" "$ip_ver"
     fi
 
-    local old_usage new_usage
-    old_usage=$(jq -r ".Type.Usage.IPinfo // empty" "$prev_file")
-    new_usage=$(jq -r ".Type.Usage.IPinfo // empty" "$new_file")
-    if [[ -n "$old_usage" && -n "$new_usage" && "$old_usage" != "$new_usage" ]]; then
-        add_alert "WARNING" "IPinfo 使用类型属性变更为 [$new_usage] (原: $old_usage)" "$ip_ver"
-    fi
+    local type_alert_dbs=("IPinfo" "ipregistry" "ipapi" "IP2LOCATION" "AbuseIPDB")
+    for tadb in "${type_alert_dbs[@]}"; do
+        local old_usage new_usage
+        if [[ "$tadb" == "IP2LOCATION" ]]; then
+            old_usage=$(jq -r '.Type.Usage.IP2LOCATION // .Type.Usage.IP2Location // empty' "$prev_file" 2>/dev/null)
+            new_usage=$(jq -r '.Type.Usage.IP2LOCATION // .Type.Usage.IP2Location // empty' "$new_file" 2>/dev/null)
+        else
+            old_usage=$(jq -r ".Type.Usage.$tadb // empty" "$prev_file" 2>/dev/null)
+            new_usage=$(jq -r ".Type.Usage.$tadb // empty" "$new_file" 2>/dev/null)
+        fi
+        if [[ -n "$old_usage" && -n "$new_usage" && "$old_usage" != "$new_usage" ]]; then
+            add_alert "WARNING" "$tadb 使用类型属性变更为 [$new_usage] (原: $old_usage)" "$ip_ver"
+        fi
 
-    local old_comp new_comp
-    old_comp=$(jq -r ".Type.Company.IPinfo // empty" "$prev_file")
-    new_comp=$(jq -r ".Type.Company.IPinfo // empty" "$new_file")
-    if [[ -n "$old_comp" && -n "$new_comp" && "$old_comp" != "$new_comp" ]]; then
-        add_alert "WARNING" "IPinfo 公司类型属性变更为 [$new_comp] (原: $old_comp)" "$ip_ver"
-    fi
+        if [[ "$tadb" != "AbuseIPDB" ]]; then
+            local old_comp new_comp
+            if [[ "$tadb" == "IP2LOCATION" ]]; then
+                old_comp=$(jq -r '.Type.Company.IP2LOCATION // .Type.Company.IP2Location // empty' "$prev_file" 2>/dev/null)
+                new_comp=$(jq -r '.Type.Company.IP2LOCATION // .Type.Company.IP2Location // empty' "$new_file" 2>/dev/null)
+            else
+                old_comp=$(jq -r ".Type.Company.$tadb // empty" "$prev_file" 2>/dev/null)
+                new_comp=$(jq -r ".Type.Company.$tadb // empty" "$new_file" 2>/dev/null)
+            fi
+            if [[ -n "$old_comp" && -n "$new_comp" && "$old_comp" != "$new_comp" ]]; then
+                add_alert "WARNING" "$tadb 公司类型属性变更为 [$new_comp] (原: $old_comp)" "$ip_ver"
+            fi
+        fi
+    done
 
     # 5. 对比风险因子新增 (Proxy, Tor, VPN, Server, Abuser, Robot)
     local factors=("Proxy" "Tor" "VPN" "Server" "Abuser" "Robot")
@@ -639,28 +691,30 @@ render_ip_type_table() {
     echo -ne "  "
     draw_divider "$divider_len"
 
-    # 数据库键值清单 (包含使用类型 Usage、公司类型 Company 与网络属性)
+    # 数据库键值清单 (包含原生/广播、各库使用类型、各库公司类型)
     local row_keys=(
+        "Info_Type"
         "Usage.IPinfo"
         "Usage.ipregistry"
         "Usage.ipapi"
-        "Usage.AbuseIPDB"
         "Usage.IP2LOCATION"
+        "Usage.AbuseIPDB"
         "Company.IPinfo"
         "Company.ipregistry"
         "Company.ipapi"
-        "Info_Type"
+        "Company.IP2LOCATION"
     )
     local row_names=(
+        "原生/广播    "
         "IPinfo (使用)"
         "ipreg  (使用)"
         "ipapi  (使用)"
-        "Abuse  (使用)"
         "IP2L   (使用)"
+        "Abuse  (使用)"
         "IPinfo (公司)"
         "ipreg  (公司)"
         "ipapi  (公司)"
-        "原生/广播    "
+        "IP2L   (公司)"
     )
 
     local valid_row_count=0
@@ -676,10 +730,18 @@ render_ip_type_table() {
                 val=$(jq -r '.Info.Type // "null"' "$f" 2>/dev/null | sed 's/Geo-consistent/原生IP/;s/Geo-discrepant/广播IP/')
             elif [[ "$rk" =~ ^Usage\.(.*) ]]; then
                 local sub_k="${BASH_REMATCH[1]}"
-                val=$(jq -r ".Type.Usage.$sub_k // \"null\"" "$f" 2>/dev/null)
+                if [[ "$sub_k" == "IP2LOCATION" ]]; then
+                    val=$(jq -r '.Type.Usage.IP2LOCATION // .Type.Usage.IP2Location // "null"' "$f" 2>/dev/null)
+                else
+                    val=$(jq -r ".Type.Usage.$sub_k // \"null\"" "$f" 2>/dev/null)
+                fi
             elif [[ "$rk" =~ ^Company\.(.*) ]]; then
                 local sub_k="${BASH_REMATCH[1]}"
-                val=$(jq -r ".Type.Company.$sub_k // \"null\"" "$f" 2>/dev/null)
+                if [[ "$sub_k" == "IP2LOCATION" ]]; then
+                    val=$(jq -r '.Type.Company.IP2LOCATION // .Type.Company.IP2Location // "null"' "$f" 2>/dev/null)
+                else
+                    val=$(jq -r ".Type.Company.$sub_k // \"null\"" "$f" 2>/dev/null)
+                fi
             fi
             if [[ -z "$val" || "$val" == "null" || "$val" == "--" ]]; then
                 val="无数据"
@@ -1345,10 +1407,6 @@ render_single_archive_card() {
     if [[ -n "$city" && -n "$country" ]]; then loc="$city, $country"; elif [[ -n "$country" ]]; then loc="$country"; elif [[ -n "$city" ]]; then loc="$city"; fi
 
     ip_type=$(jq -r '.Info.Type // "--"' "$f" 2>/dev/null | sed 's/Geo-consistent/原生IP/;s/Geo-discrepant/广播IP/')
-    usage_ipinfo=$(jq -r '.Type.Usage.IPinfo // "--"' "$f" 2>/dev/null)
-    comp_ipinfo=$(jq -r '.Type.Company.IPinfo // "--"' "$f" 2>/dev/null)
-    usage_ipreg=$(jq -r '.Type.Usage.ipregistry // "--"' "$f" 2>/dev/null)
-    comp_ipreg=$(jq -r '.Type.Company.ipregistry // "--"' "$f" 2>/dev/null)
 
     local proto_color="$C_GREEN"
     [[ "$proto_tag" == "IPv6" ]] && proto_color="$C_CYAN"
@@ -1357,39 +1415,75 @@ render_single_archive_card() {
     echo -e "  ${C_CYAN}📡 节点 IP  :${C_RESET} ${C_BOLD}${ip}${C_RESET} ($proto_tag)"
     echo -e "  ${C_CYAN}🏢 组织/ASN :${C_RESET} ${asn} (${org})"
     echo -e "  ${C_CYAN}📍 地理位置 :${C_RESET} ${loc}"
-    # 动态拼接属性类型 (过滤掉无数据 / null)
-    local type_parts=()
     if [[ -n "$ip_type" && "$ip_type" != "--" && "$ip_type" != "null" && "$ip_type" != "未知" ]]; then
-        type_parts+=("${C_GREEN}${ip_type}${C_RESET}")
+        local type_badge="$SYM_DOT_GREEN ${C_GREEN}${ip_type}${C_RESET}"
+        [[ "$ip_type" =~ (广播IP|Discrepant) ]] && type_badge="$SYM_DOT_RED ${C_RED}${ip_type}${C_RESET}"
+        echo -e "  ${C_CYAN}🌐 网络类型 :${C_RESET} ${type_badge}"
     fi
 
-    local ipinfo_txt=""
-    if [[ -n "$usage_ipinfo" && "$usage_ipinfo" != "null" && "$usage_ipinfo" != "--" ]]; then
-        ipinfo_txt+="使用[$usage_ipinfo]"
-    fi
-    if [[ -n "$comp_ipinfo" && "$comp_ipinfo" != "null" && "$comp_ipinfo" != "--" ]]; then
-        [[ -n "$ipinfo_txt" ]] && ipinfo_txt+=" "
-        ipinfo_txt+="公司[$comp_ipinfo]"
-    fi
-    [[ -n "$ipinfo_txt" ]] && type_parts+=("IPinfo: $ipinfo_txt")
+    # IP 类型属性 (展示 IPinfo, ipregistry, ipapi, IP2Location, AbuseIPDB 5大检测商)
+    local all_type_dbs=("IPinfo" "ipregistry" "ipapi" "IP2Location" "AbuseIPDB")
+    local active_type_dbs=()
+    local type_usage_vals=()
+    local type_comp_vals=()
+    local type_col_widths=()
+    local has_any_comp=false
 
-    local ipreg_txt=""
-    if [[ -n "$usage_ipreg" && "$usage_ipreg" != "null" && "$usage_ipreg" != "--" ]]; then
-        ipreg_txt+="使用[$usage_ipreg]"
-    fi
-    if [[ -n "$comp_ipreg" && "$comp_ipreg" != "null" && "$comp_ipreg" != "--" ]]; then
-        [[ -n "$ipreg_txt" ]] && ipreg_txt+=" "
-        ipreg_txt+="公司[$comp_ipreg]"
-    fi
-    [[ -n "$ipreg_txt" ]] && type_parts+=("ipreg: $ipreg_txt")
+    for tdb in "${all_type_dbs[@]}"; do
+        local u="" c=""
+        if [[ "$tdb" == "IP2Location" ]]; then
+            u=$(jq -r '.Type.Usage.IP2LOCATION // .Type.Usage.IP2Location // ""' "$f" 2>/dev/null)
+            c=$(jq -r '.Type.Company.IP2LOCATION // .Type.Company.IP2Location // ""' "$f" 2>/dev/null)
+        else
+            u=$(jq -r ".Type.Usage.$tdb // \"\"" "$f" 2>/dev/null)
+            c=$(jq -r ".Type.Company.$tdb // \"\"" "$f" 2>/dev/null)
+        fi
+        [[ "$u" == "null" || "$u" == "--" ]] && u=""
+        [[ "$c" == "null" || "$c" == "--" ]] && c=""
 
-    local type_line=""
-    for ((tp_i=0; tp_i<${#type_parts[@]}; tp_i++)); do
-        if (( tp_i > 0 )); then type_line+=" │ "; fi
-        type_line+="${type_parts[$tp_i]}"
+        # 若使用类型与公司类型均无有效数据则隐藏该检测商列
+        if [[ -z "$u" && -z "$c" ]]; then
+            continue
+        fi
+
+        active_type_dbs+=("$tdb")
+        type_usage_vals+=("$u")
+        type_comp_vals+=("$c")
+        [[ -n "$c" ]] && has_any_comp=true
+
+        local w=$(( ${#tdb} + 3 ))
+        (( w < 12 )) && w=12
+        type_col_widths+=("$w")
     done
-    [[ -z "$type_line" ]] && type_line="未知"
-    echo -e "  ${C_CYAN}🏷️ 属性类型 :${C_RESET} ${type_line}"
+
+    if [[ ${#active_type_dbs[@]} -gt 0 ]]; then
+        echo -e "  ${C_GRAY}── 🏷️ IP 类型属性 ──────────────────────────────────────────────────${C_RESET}"
+        echo -ne "    ${C_CYAN}数据库:   ${C_RESET}"
+        for (( i=0; i<${#active_type_dbs[@]}; i++ )); do
+            local db="${active_type_dbs[$i]}"
+            local w="${type_col_widths[$i]}"
+            printf "%-${w}s" "$db"
+        done
+        echo ""
+
+        echo -ne "    ${C_CYAN}使用类型: ${C_RESET}"
+        for (( i=0; i<${#active_type_dbs[@]}; i++ )); do
+            local u="${type_usage_vals[$i]}"
+            local w="${type_col_widths[$i]}"
+            fmt_type_badge "$u" "$w"
+        done
+        echo ""
+
+        if [[ "$has_any_comp" == "true" ]]; then
+            echo -ne "    ${C_CYAN}公司类型: ${C_RESET}"
+            for (( i=0; i<${#active_type_dbs[@]}; i++ )); do
+                local c="${type_comp_vals[$i]}"
+                local w="${type_col_widths[$i]}"
+                fmt_type_badge "$c" "$w"
+            done
+            echo ""
+        fi
+    fi
 
     # 风控评分 (仅展示具有有效数值评分的数据库，无数据的数据库直接隐藏)
     echo -e "  ${C_GRAY}── 📊 权威风控评分 ─────────────────────────────────────────────────${C_RESET}"
@@ -1807,6 +1901,7 @@ update_ipqa() {
         mv "$tmp_core" "$IP_SCRIPT"
         sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
         chmod +x "$IP_SCRIPT"
+        patch_ip_script
         date +%s > "$IPQA_HOME/.last_core_update" 2>/dev/null || true
         echo -e "${C_GREEN}✔ IPQuality 检测核心已成功同步至最新版本！${C_RESET}"
     else
@@ -2023,6 +2118,8 @@ case "$1" in
         echo "  --update      一键从 GitHub 在线更新 IPQA 主程序"
         echo "  --uninstall   干净卸载 IPQA 并清理任务与软链接"
         echo "  --help, -h    显示本帮助信息"
+        ;;
+    --test)
         ;;
     *)
         main_loop

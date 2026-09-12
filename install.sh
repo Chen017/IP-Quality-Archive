@@ -253,6 +253,9 @@ fi
 sed -i 's/\r$//' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
 sed -i 's/\r$//' "$INSTALL_DIR/ipqa.sh" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/ip.sh" "$INSTALL_DIR/ipqa.sh"
+if [[ -f "$INSTALL_DIR/ip.sh" ]] && ! grep -q 'Company: { IP2LOCATION' "$INSTALL_DIR/ip.sh" 2>/dev/null; then
+    sed -i '/Company: { ipapi:/a \type_updates+=".Type |= . * { Company: { IP2LOCATION: \\"$(clean_ansi "${ip2location[scomtype]:-null}")\\" } } | "' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
+fi
 
 # 自动计算服务器当前时区下对应“北京时间凌晨 04:00”的小时数 (0-23)
 get_beijing_4am_local_hour() {

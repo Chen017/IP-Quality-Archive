@@ -623,12 +623,13 @@ render_ip_type_table() {
         "原生/广播    "
     )
 
+    local valid_row_count=0
     for idx in "${!row_keys[@]}"; do
         local rk="${row_keys[$idx]}"
         local rname="${row_names[$idx]}"
-        echo -n "  $rname "
 
         local vals=()
+        local row_has_data=false
         for f in "${files[@]}"; do
             local val=""
             if [[ "$rk" == "Info_Type" ]]; then
@@ -640,9 +641,20 @@ render_ip_type_table() {
                 local sub_k="${BASH_REMATCH[1]}"
                 val=$(jq -r ".Type.Company.$sub_k // \"null\"" "$f" 2>/dev/null)
             fi
-            [[ -z "$val" || "$val" == "null" ]] && val="无数据"
+            if [[ -z "$val" || "$val" == "null" || "$val" == "--" ]]; then
+                val="无数据"
+            else
+                row_has_data=true
+            fi
             vals+=("$val")
-            
+        done
+
+        # 过滤在所选时间段中全部为无数据的维度
+        [[ "$row_has_data" == "false" ]] && continue
+
+        (( valid_row_count++ ))
+        echo -n "  $rname "
+        for val in "${vals[@]}"; do
             # 着色渲染 (6字符截断并用 pad_cell 对齐)
             local display_val="${val:0:6}"
             local cell_color="$C_GRAY"
@@ -671,9 +683,13 @@ render_ip_type_table() {
         if [[ "$is_stable" == "true" ]]; then
             printf "│ ${C_GREEN}✅ 保持稳定${C_RESET}\n"
         else
-            printf "│ ${C_YELLOW}⚠️ 存在变动${C_RESET}\n"
+            printf "│ ${C_YELLOW}⚠️  存在变动${C_RESET}\n"
         fi
     done
+
+    if (( valid_row_count == 0 )); then
+        echo -e "  ${C_GRAY}（当前所选时间段内暂无有效类型记录）${C_RESET}"
+    fi
 
     echo -ne "  "
     draw_divider "$divider_len"
@@ -749,19 +765,37 @@ render_risk_score_chart() {
     echo -e "${C_CYAN}${C_BOLD}▶ $target_proto 综合风险评分历史走势:${C_RESET}"
 
     local dbs=("SCAMALYTICS" "IP2LOCATION" "AbuseIPDB" "IPQS" "ipapi" "DBIP")
+    local shown_db_count=0
 
     for db in "${dbs[@]}"; do
+        # 预先检查该数据库在当前时间范围内是否有有效数值评分
+        local db_has_score=false
+        for f in "${files[@]}"; do
+            local sc
+            sc=$(jq -r ".Score.$db // \"null\"" "$f" 2>/dev/null)
+            if [[ "$sc" =~ ^[0-9]+$ ]]; then
+                db_has_score=true
+                break
+            fi
+        done
+        [[ "$db_has_score" == "false" ]] && continue
+
+        (( shown_db_count++ ))
         echo -e "${C_BOLD}  • 数据库: ${C_CYAN}$db${C_RESET} (满分 100)"
         for f in "${files[@]}"; do
             local dt
             dt=$(fmt_short_time "$(basename "$f" .json)")
             local score
-            score=$(jq -r ".Score.$db // \"null\"" "$f")
+            score=$(jq -r ".Score.$db // \"null\"" "$f" 2>/dev/null)
             printf "    %-12s ▏ " "$dt"
             render_bar "$score"
         done
         echo ""
     done
+
+    if (( shown_db_count == 0 )); then
+        echo -e "  ${C_GRAY}（当前所选时间段内各数据库暂无有效评分数据）${C_RESET}\n"
+    fi
 }
 
 show_risk_score() {
@@ -1258,17 +1292,56 @@ render_single_archive_card() {
     echo -e "  ${C_CYAN}📡 节点 IP  :${C_RESET} ${C_BOLD}${ip}${C_RESET} ($proto_tag)"
     echo -e "  ${C_CYAN}🏢 组织/ASN :${C_RESET} ${asn} (${org})"
     echo -e "  ${C_CYAN}📍 地理位置 :${C_RESET} ${loc}"
-    echo -e "  ${C_CYAN}🏷️ 属性类型 :${C_RESET} ${C_GREEN}${ip_type}${C_RESET} │ IPinfo: 使用[$usage_ipinfo] 公司[$comp_ipinfo] │ ipreg: 使用[$usage_ipreg] 公司[$comp_ipreg]"
+    # 动态拼接属性类型 (过滤掉无数据 / null)
+    local type_parts=()
+    if [[ -n "$ip_type" && "$ip_type" != "--" && "$ip_type" != "null" && "$ip_type" != "未知" ]]; then
+        type_parts+=("${C_GREEN}${ip_type}${C_RESET}")
+    fi
 
-    # 风控评分
+    local ipinfo_txt=""
+    if [[ -n "$usage_ipinfo" && "$usage_ipinfo" != "null" && "$usage_ipinfo" != "--" ]]; then
+        ipinfo_txt+="使用[$usage_ipinfo]"
+    fi
+    if [[ -n "$comp_ipinfo" && "$comp_ipinfo" != "null" && "$comp_ipinfo" != "--" ]]; then
+        [[ -n "$ipinfo_txt" ]] && ipinfo_txt+=" "
+        ipinfo_txt+="公司[$comp_ipinfo]"
+    fi
+    [[ -n "$ipinfo_txt" ]] && type_parts+=("IPinfo: $ipinfo_txt")
+
+    local ipreg_txt=""
+    if [[ -n "$usage_ipreg" && "$usage_ipreg" != "null" && "$usage_ipreg" != "--" ]]; then
+        ipreg_txt+="使用[$usage_ipreg]"
+    fi
+    if [[ -n "$comp_ipreg" && "$comp_ipreg" != "null" && "$comp_ipreg" != "--" ]]; then
+        [[ -n "$ipreg_txt" ]] && ipreg_txt+=" "
+        ipreg_txt+="公司[$comp_ipreg]"
+    fi
+    [[ -n "$ipreg_txt" ]] && type_parts+=("ipreg: $ipreg_txt")
+
+    local type_line=""
+    for ((tp_i=0; tp_i<${#type_parts[@]}; tp_i++)); do
+        if (( tp_i > 0 )); then type_line+=" │ "; fi
+        type_line+="${type_parts[$tp_i]}"
+    done
+    [[ -z "$type_line" ]] && type_line="未知"
+    echo -e "  ${C_CYAN}🏷️ 属性类型 :${C_RESET} ${type_line}"
+
+    # 风控评分 (仅展示具有有效数值评分的数据库，无数据的数据库直接隐藏)
     echo -e "  ${C_GRAY}── 📊 权威风控评分 ─────────────────────────────────────────────────${C_RESET}"
     local score_dbs=("SCAMALYTICS" "IP2LOCATION" "AbuseIPDB" "IPQS" "ipapi" "DBIP")
+    local score_count=0
     for sdb in "${score_dbs[@]}"; do
         local sc
         sc=$(jq -r ".Score.$sdb // \"null\"" "$f" 2>/dev/null)
-        printf "    • %-13s ▏ " "$sdb"
-        render_bar "$sc"
+        if [[ "$sc" =~ ^[0-9]+$ ]]; then
+            printf "    • %-13s ▏ " "$sdb"
+            render_bar "$sc"
+            (( score_count++ ))
+        fi
     done
+    if (( score_count == 0 )); then
+        echo -e "    ${C_GRAY}• 暂无各权威数据库有效风控评分数据${C_RESET}"
+    fi
 
     # 风险因子
     echo -e "  ${C_GRAY}── 🔬 核心安全因子 ─────────────────────────────────────────────────${C_RESET}"

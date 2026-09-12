@@ -254,11 +254,31 @@ sed -i 's/\r$//' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
 sed -i 's/\r$//' "$INSTALL_DIR/ipqa.sh" 2>/dev/null || true
 chmod +x "$INSTALL_DIR/ip.sh" "$INSTALL_DIR/ipqa.sh"
 
+# 自动计算服务器当前时区下对应“北京时间凌晨 04:00”的小时数 (0-23)
+get_beijing_4am_local_hour() {
+    local h
+    h=$(date -d 'TZ="Asia/Shanghai" 04:00' +%H 2>/dev/null | sed 's/^0//')
+    if [[ -z "$h" || ! "$h" =~ ^[0-9]+$ ]]; then
+        local z
+        z=$(date +%z)
+        local sign="${z:0:1}"
+        local zh="${z:1:2}"
+        local zm="${z:3:2}"
+        local local_offset_sec=$(( (10#$zh * 3600) + (10#$zm * 60) ))
+        [[ "$sign" == "-" ]] && local_offset_sec=$(( -local_offset_sec ))
+        local local_sec=$(( -14400 + local_offset_sec ))
+        local mod_sec=$(( local_sec % 86400 ))
+        (( mod_sec < 0 )) && mod_sec=$(( mod_sec + 86400 ))
+        h=$(( mod_sec / 3600 ))
+    fi
+    echo "$h"
+}
+
 # 初始化配置文件
 if [[ ! -f "$INSTALL_DIR/config.sh" ]]; then
     cat <<EOF > "$INSTALL_DIR/config.sh"
 # IPQA Configuration
-CHECK_INTERVAL_HOURS=6
+CHECK_INTERVAL_HOURS=24
 HAS_V6="auto"
 V6_CHECK_COUNT=0
 V6_PROBE_INTERVAL=10
@@ -296,7 +316,15 @@ fi
 if [[ "$IS_UPDATE" == "true" ]]; then
     echo -e "\n${C_GREEN}${C_BOLD}🎉 IPQA 已成功更新至最新版本！${C_RESET}"
     if crontab -l 2>/dev/null | grep -qE "ipqa(\.sh)? --cron"; then
-        echo -e "${C_GREEN}✔ 已自动保留原定时检测任务${C_RESET}"
+        local_h=$(get_beijing_4am_local_hour)
+        CRON_BIN="$(command -v ipqa 2>/dev/null || echo "$INSTALL_DIR/ipqa.sh")"
+        existing=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
+        {
+            [[ -n "$existing" ]] && echo "$existing"
+            echo "# IPQA AUTO CHECK - DO NOT EDIT MANUALLY"
+            echo "0 $local_h * * * $CRON_BIN --cron >> $INSTALL_DIR/logs/ipqa.log 2>&1"
+        } | crontab -
+        echo -e "${C_GREEN}✔ 已自动清理旧版任务，应用新默认: 每天北京时间凌晨 04:00 (本机时间: $local_h:00, Cron: 0 $local_h * * *)${C_RESET}"
     fi
     echo -e "${C_GREEN}✔ 历史存档与用户配置已完整保留${C_RESET}"
 else
@@ -304,7 +332,8 @@ else
 
     # 定时任务配置询问 (交互式，仅初次安装)
     if [[ "$NON_INTERACTIVE" == "false" ]]; then
-        echo -ne "\n${C_CYAN}是否立即开启每 6 小时自动检测一次并归档? (Y/n): ${C_RESET}"
+        local_h=$(get_beijing_4am_local_hour)
+        echo -ne "\n${C_CYAN}是否开启每天定时自动检测与归档 (北京时间凌晨 04:00 / 本机 $local_h:00)? (Y/n): ${C_RESET}"
         read -r setup_cron_ans
         setup_cron_ans="${setup_cron_ans:-y}"
         if [[ "$setup_cron_ans" =~ ^[yY] ]]; then
@@ -313,9 +342,9 @@ else
             {
                 [[ -n "$existing" ]] && echo "$existing"
                 echo "# IPQA AUTO CHECK - DO NOT EDIT MANUALLY"
-                echo "0 */6 * * * $CRON_BIN --cron >> $INSTALL_DIR/logs/ipqa.log 2>&1"
+                echo "0 $local_h * * * $CRON_BIN --cron >> $INSTALL_DIR/logs/ipqa.log 2>&1"
             } | crontab -
-            echo -e "${C_GREEN}✔ 已为您激活每 6 小时定时检测 (Cron: 0 */6 * * *)${C_RESET}"
+            echo -e "${C_GREEN}✔ 已为您激活每天定时检测 (北京时间 04:00, 本机 Cron: 0 $local_h * * *)${C_RESET}"
         fi
 
         echo -ne "\n${C_CYAN}是否立即执行首次 IP 质量检测并建立初始存档? (Y/n): ${C_RESET}"

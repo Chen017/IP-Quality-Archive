@@ -61,6 +61,13 @@ draw_divider() {
     echo -e "${C_GRAY}${line}${C_RESET}"
 }
 
+print_module_header() {
+    local title="$1"
+    echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
+    echo -e "  ${C_BOLD}${title}${C_RESET}"
+    echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}\n"
+}
+
 # ==============================================================================
 # 配置管理
 # ==============================================================================
@@ -541,9 +548,7 @@ show_ip_type() {
         return
     fi
 
-    echo -e "${C_CYAN}${C_BOLD}╔══════════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}║  📊 IP 类型属性变化分析 ($TARGET_PROTO)                                             ║${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}╚══════════════════════════════════════════════════════════════════════════════════╝${C_RESET}\n"
+    print_module_header "📊 IP 类型属性变化分析 ($TARGET_PROTO)"
 
     # 提取各列时间表头
     local dates=()
@@ -666,9 +671,7 @@ show_risk_score() {
         return
     fi
 
-    echo -e "${C_CYAN}${C_BOLD}╔══════════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}║  📈 风险评分历史趋势图 ($TARGET_PROTO)                                              ║${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}╚══════════════════════════════════════════════════════════════════════════════════╝${C_RESET}\n"
+    print_module_header "📈 风险评分历史趋势图 ($TARGET_PROTO)"
 
     local dbs=("SCAMALYTICS" "IP2LOCATION" "AbuseIPDB" "IPQS" "ipapi" "DBIP")
 
@@ -705,9 +708,7 @@ show_risk_factor() {
         return
     fi
 
-    echo -e "${C_CYAN}${C_BOLD}╔══════════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}║  🔬 风险因子综合矩阵 ($TARGET_PROTO)                                               ║${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}╚══════════════════════════════════════════════════════════════════════════════════╝${C_RESET}\n"
+    print_module_header "🔬 风险因子综合矩阵 ($TARGET_PROTO)"
 
     echo -e "最新检测存档: ${C_YELLOW}$(basename "$latest_file")${C_RESET}\n"
 
@@ -807,9 +808,7 @@ show_media_unlock() {
         return
     fi
 
-    echo -e "${C_CYAN}${C_BOLD}╔══════════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}║  🎬 流媒体与 AI 解锁历史监测 ($TARGET_PROTO)                                       ║${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}╚══════════════════════════════════════════════════════════════════════════════════╝${C_RESET}\n"
+    print_module_header "🎬 流媒体与 AI 解锁历史监测 ($TARGET_PROTO)"
 
     local dates=()
     for f in "${files[@]}"; do
@@ -934,9 +933,7 @@ show_mail_status() {
         return
     fi
 
-    echo -e "${C_CYAN}${C_BOLD}╔══════════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}║  📬 邮件服务器连通性矩阵 ($TARGET_PROTO)                                           ║${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}╚══════════════════════════════════════════════════════════════════════════════════╝${C_RESET}\n"
+    print_module_header "📬 邮件服务器连通性矩阵 ($TARGET_PROTO)"
 
     # 最新 Port25 状态
     local latest_file="${files[-1]}"
@@ -1002,9 +999,7 @@ show_blacklist() {
         return
     fi
 
-    echo -e "${C_CYAN}${C_BOLD}╔══════════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}║  🚫 DNS 黑名单趋势与现状 ($TARGET_PROTO)                                          ║${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}╚══════════════════════════════════════════════════════════════════════════════════╝${C_RESET}\n"
+    print_module_header "🚫 DNS 黑名单趋势与现状 ($TARGET_PROTO)"
 
     local latest_file="${files[-1]}"
     local total clean marked blacklisted
@@ -1048,9 +1043,7 @@ show_blacklist() {
 setup_cron() {
     clear
     load_config
-    echo -e "${C_CYAN}${C_BOLD}╔══════════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}║  ⚙️  设置后台定时自动检测与存档                                                  ║${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}╚══════════════════════════════════════════════════════════════════════════════════╝${C_RESET}\n"
+    print_module_header "⚙️  设置后台定时自动检测与存档"
 
     # 检测当前 crontab 中是否有 ipqa 任务
     local current_cron
@@ -1144,9 +1137,7 @@ view_archives() {
         return
     fi
 
-    echo -e "${C_CYAN}${C_BOLD}╔══════════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}║  📋 历史原始存档列表 ($TARGET_PROTO)                                               ║${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}╚══════════════════════════════════════════════════════════════════════════════════╝${C_RESET}\n"
+    print_module_header "📋 历史原始存档列表 ($TARGET_PROTO)"
 
     local max_show=15
     local show_count=$(( ${#files[@]} < max_show ? ${#files[@]} : max_show ))
@@ -1208,9 +1199,7 @@ update_script() {
 # ==============================================================================
 cleanup_data() {
     clear
-    echo -e "${C_CYAN}${C_BOLD}╔══════════════════════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}║  🗑️  清理与维护历史数据                                                          ║${C_RESET}"
-    echo -e "${C_CYAN}${C_BOLD}╚══════════════════════════════════════════════════════════════════════════════════╝${C_RESET}\n"
+    print_module_header "🗑️  清理与维护历史数据"
 
     local v4_cnt v6_cnt v4_size v6_size
     v4_cnt=$(ls -1 "$V4_DIR"/*.json 2>/dev/null | wc -l)
@@ -1341,6 +1330,7 @@ render_panel() {
 
     # 定时检测状态 (提取执行周期并显示友好名称)
     local cron_status="未开启"
+    local cron_colored="${C_GRAY}未开启${C_RESET}"
     local cron_line
     cron_line=$(crontab -l 2>/dev/null | grep -E "ipqa(\.sh)? --cron" | head -n 1 || true)
     if [[ -n "$cron_line" ]]; then
@@ -1354,53 +1344,56 @@ render_panel() {
             "0 4 * * *") cron_status="已启用 (每天)" ;;
             *) cron_status="已启用 ($schedule)" ;;
         esac
+        cron_colored="${C_GREEN}${cron_status}${C_RESET}"
     fi
 
+    local asn_display="$asn"
+    [[ "$asn" =~ ^[0-9]+$ ]] && asn_display="AS$asn"
+
     # 打印顶部 Panel
-    echo -e "${C_CYAN}╔══════════════════════════════════════════════════════════════════╗${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}         ${C_BOLD}${C_GREEN}🔍 IP 质量存档监测系统 (IPQA)${C_RESET}  ${C_GRAY}${IPQA_VERSION}${C_RESET}                  ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}╠══════════════════════════════════════════════════════════════════╣${C_RESET}"
-    printf "${C_CYAN}║${C_RESET}  📡 IP: %-22s │ v6: %-18s ${C_CYAN}║${C_RESET}\n" "${ip_v4:0:22}" "${ip_v6:0:18}"
-    printf "${C_CYAN}║${C_RESET}  🏢 ASN: %-18s │ 📍 归属: %-18s ${C_CYAN}║${C_RESET}\n" "${asn:0:18}" "${loc:0:18}"
-    echo -e "${C_CYAN}╠══════════════════════════════════════════════════════════════════╣${C_RESET}"
-    printf "${C_CYAN}║${C_RESET}  ⏰ 上次检测: %-46s ${C_CYAN}║${C_RESET}\n" "$last_check"
-    printf "${C_CYAN}║${C_RESET}  📦 存档数量: v4: %-4d 份  │  v6: %-4d 份                    ${C_CYAN}║${C_RESET}\n" "$count_v4" "$count_v6"
-    printf "${C_CYAN}║${C_RESET}  📅 时间跨度: %-46s ${C_CYAN}║${C_RESET}\n" "$time_span"
-    printf "${C_CYAN}║${C_RESET}  🔄 定时检测: %-46s ${C_CYAN}║${C_RESET}\n" "$cron_status"
-    echo -e "${C_CYAN}╠══════════════════════════════════════════════════════════════════╣${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}  ${C_YELLOW}⚠️  最近风险变化提醒:${C_RESET}                                           ${C_CYAN}║${C_RESET}"
+    echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
+    echo -e "   ${C_BOLD}${C_GREEN}🔍 IP 质量存档监测系统 (IPQA)${C_RESET}  ${C_GRAY}${IPQA_VERSION}${C_RESET}"
+    echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
+    echo ""
+    echo -e "  ${C_CYAN}📡 节点网络:${C_RESET} ${C_BOLD}${ip_v4}${C_RESET} (IPv4)  ${C_GRAY}│${C_RESET}  ${C_BOLD}${ip_v6}${C_RESET} (IPv6)"
+    echo -e "  ${C_CYAN}🏢 归属信息:${C_RESET} ${asn_display}  ${C_GRAY}│${C_RESET}  📍 ${loc}"
+    echo -e "  ${C_CYAN}⏰ 上次检测:${C_RESET} ${last_check}"
+    echo -e "  ${C_CYAN}📦 历史存档:${C_RESET} IPv4: ${C_GREEN}${count_v4}${C_RESET} 份  ${C_GRAY}│${C_RESET}  IPv6: ${C_GREEN}${count_v6}${C_RESET} 份"
+    echo -e "  ${C_CYAN}📅 时间跨度:${C_RESET} ${time_span}"
+    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored}"
+    echo ""
+    echo -e "${C_GRAY}── ${C_YELLOW}⚠️  最近风险变化提醒${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
 
     # 读取最近 3 条告警
     local alerts=()
     mapfile -t alerts < <(get_recent_alerts 3)
     if [[ ${#alerts[@]} -eq 0 ]]; then
-        echo -e "${C_CYAN}║${C_RESET}  ${C_GREEN}  • 暂无异常风险波动，IP 质量状态保持稳定${C_RESET}                       ${C_CYAN}║${C_RESET}"
+        echo -e "  ${C_GREEN}• 暂无异常风险波动，IP 质量状态保持稳定${C_RESET}"
     else
         for alt in "${alerts[@]}"; do
             # 格式: 2026-09-11 12:00:00|WARNING|YouTube Region 发生变化|IPv4
             IFS='|' read -r a_time a_level a_msg a_ver <<< "$alt"
             local a_short_time
             a_short_time=$(echo "$a_time" | cut -d ' ' -f 1 | cut -d '-' -f 2,3)
-            local clean_msg="${a_msg:0:44}"
             if [[ "$a_level" == "CRITICAL" ]]; then
-                printf "${C_CYAN}║${C_RESET}  ${C_RED}• [%s] %-45s${C_RESET} ${C_CYAN}║${C_RESET}\n" "$a_short_time" "$clean_msg"
+                echo -e "  ${C_RED}• [${a_short_time}] ${a_msg}${C_RESET}"
+            elif [[ "$a_level" == "WARNING" ]]; then
+                echo -e "  ${C_YELLOW}• [${a_short_time}] ${a_msg}${C_RESET}"
             else
-                printf "${C_CYAN}║${C_RESET}  ${C_YELLOW}• [%s] %-45s${C_RESET} ${C_CYAN}║${C_RESET}\n" "$a_short_time" "$clean_msg"
+                echo -e "  ${C_CYAN}• [${a_short_time}] ${a_msg}${C_RESET}"
             fi
         done
     fi
 
-    echo -e "${C_CYAN}╠══════════════════════════════════════════════════════════════════╣${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}                                                                  ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}  ${C_BOLD}[1]${C_RESET} 📊 IP 类型属性变化          ${C_BOLD}[6]${C_RESET} 🚫 黑名单历史趋势            ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}  ${C_BOLD}[2]${C_RESET} 📈 风险评分趋势图          ${C_BOLD}[7]${C_RESET} ⚙️  配置定时任务              ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}  ${C_BOLD}[3]${C_RESET} 🔬 风险因子综合矩阵        ${C_BOLD}[8]${C_RESET} 🔄 立即执行检测              ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}  ${C_BOLD}[4]${C_RESET} 🎬 流媒体与AI解锁          ${C_BOLD}[9]${C_RESET} 📋 查看原始存档              ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}  ${C_BOLD}[5]${C_RESET} 📬 邮局连通性状态          ${C_BOLD}[u]${C_RESET} 🔃 更新检测核心              ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}                                  ${C_BOLD}[c]${C_RESET} 🗑️  清理历史数据              ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}                                  ${C_BOLD}[0]${C_RESET} 🚪 退出程序                  ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}║${C_RESET}                                                                  ${C_CYAN}║${C_RESET}"
-    echo -e "${C_CYAN}╚══════════════════════════════════════════════════════════════════╝${C_RESET}"
+    echo ""
+    echo -e "${C_GRAY}── ${C_CYAN}📋 功能菜单导航${C_RESET} ${C_GRAY}───────────────────────────────────────────────────${C_RESET}"
+    echo -e "  ${C_BOLD}[1]${C_RESET} 📊 IP 类型属性变化       ${C_BOLD}[7]${C_RESET} ⚙️  配置定时任务"
+    echo -e "  ${C_BOLD}[2]${C_RESET} 📈 风险评分趋势图        ${C_BOLD}[8]${C_RESET} 🔄 立即执行检测"
+    echo -e "  ${C_BOLD}[3]${C_RESET} 🔬 风险因子综合矩阵      ${C_BOLD}[9]${C_RESET} 📋 查看原始存档"
+    echo -e "  ${C_BOLD}[4]${C_RESET} 🎬 流媒体与AI解锁        ${C_BOLD}[u]${C_RESET} 🔃 更新检测核心"
+    echo -e "  ${C_BOLD}[5]${C_RESET} 📬 邮局连通性状态        ${C_BOLD}[c]${C_RESET} 🗑️  清理历史数据"
+    echo -e "  ${C_BOLD}[6]${C_RESET} 🚫 黑名单历史趋势        ${C_BOLD}[0]${C_RESET} 🚪 退出程序"
+    echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}"
 }
 
 main_loop() {

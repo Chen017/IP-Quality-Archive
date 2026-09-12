@@ -790,67 +790,88 @@ render_risk_factor_matrix() {
     echo ""
 }
 
-show_risk_factor() {
-    clear
-    print_module_header "🔬 风险因子综合矩阵"
+render_risk_factor_history() {
+    local target_dir="$1"
+    local target_proto="$2"
 
-    render_risk_factor_matrix "$V4_DIR" "IPv4"
-
-    local v6_cnt
-    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
-    if (( v6_cnt > 0 )); then
-        render_risk_factor_matrix "$V6_DIR" "IPv6"
+    local hist_files=()
+    mapfile -t hist_files < <(load_archive_files "$target_dir" "$SELECTED_RANGE" 6)
+    if [[ ${#hist_files[@]} -eq 0 ]]; then
+        return
     fi
 
-    echo -e "图例说明: ${SYM_DOT_GREEN} 安全/未检出  ${SYM_MARK_RED} 风险检出(警告)  ${SYM_DOT_GRAY} 未检测/不支持\n"
+    echo -e "${C_CYAN}${C_BOLD}▶ $target_proto 各风险因子历史检出趋势 (时间线):${C_RESET}"
 
-    # 提供展开查看时间趋势选项 (针对 IPv4 历史)
-    echo -e "${C_BOLD}进一步查看各因子历史变化趋势 (IPv4)?${C_RESET}"
-    echo -e "  [1] Proxy 历史   [3] VPN 历史     [5] Abuser 历史"
-    echo -e "  [2] Tor 历史     [4] Server 历史  [0] 跳过/返回"
-    echo -ne "${C_CYAN}请选择: ${C_RESET}"
-    read -r sub_opt
+    local dates=()
+    for hf in "${hist_files[@]}"; do
+        dates+=("$(fmt_short_date "$(basename "$hf" .json)")")
+    done
 
-    local target_factor=""
-    case "$sub_opt" in
-        1) target_factor="Proxy" ;;
-        2) target_factor="Tor" ;;
-        3) target_factor="VPN" ;;
-        4) target_factor="Server" ;;
-        5) target_factor="Abuser" ;;
-        *) return ;;
-    esac
+    printf "  %-9s" "风险因子"
+    for d in "${dates[@]}"; do
+        printf "│  %-5s " "$d"
+    done
+    printf "│ %-12s\n" "历史综合表现"
 
-    clear
-    print_module_header "🔬 $target_factor 因子历史检出追踪"
-    local hist_files=()
-    mapfile -t hist_files < <(load_archive_files "$V4_DIR" 2 10)
+    local divider_len=$(( 11 + ${#dates[@]} * 9 + 15 ))
+    echo -ne "  "
+    draw_divider "$divider_len"
 
     local full_engines=("IP2LOCATION" "ipapi" "ipregistry" "IPQS" "SCAMALYTICS" "ipdata" "IPinfo" "IPWHOIS" "DBIP")
-    for hf in "${hist_files[@]}"; do
-        local dt
-        dt=$(fmt_short_time "$(basename "$hf" .json)")
-        local detected_count=0
-        local total_tested=0
-        for eng in "${full_engines[@]}"; do
-            local v
-            v=$(jq -r "if .Factor[\"$target_factor\"][\"$eng\"] != null then .Factor[\"$target_factor\"][\"$eng\"] else .Factor[\"$target_factor\"][\"WHOIS\"] end" "$hf")
-            if [[ "$v" == "true" ]]; then
-                detected_count=$((detected_count + 1))
-                total_tested=$((total_tested + 1))
-            elif [[ "$v" == "false" ]]; then
-                total_tested=$((total_tested + 1))
+    local factors=("Proxy" "Tor" "VPN" "Server" "Abuser" "Robot")
+
+    for fac in "${factors[@]}"; do
+        printf "  %-8s " "$fac"
+        local had_detection=false
+        for hf in "${hist_files[@]}"; do
+            local detected_count=0
+            local total_tested=0
+            for eng in "${full_engines[@]}"; do
+                local v
+                v=$(jq -r "if .Factor[\"$fac\"][\"$eng\"] != null then .Factor[\"$fac\"][\"$eng\"] else .Factor[\"$fac\"][\"WHOIS\"] end" "$hf" 2>/dev/null)
+                if [[ "$v" == "true" ]]; then
+                    detected_count=$((detected_count + 1))
+                    total_tested=$((total_tested + 1))
+                elif [[ "$v" == "false" ]]; then
+                    total_tested=$((total_tested + 1))
+                fi
+            done
+            if (( detected_count > 0 )); then
+                printf "│ ${C_RED}⚠️ %d/%d${C_RESET} " "$detected_count" "$total_tested"
+                had_detection=true
+            else
+                printf "│ ${C_GREEN}✔ 安全${C_RESET} "
             fi
         done
-
-        printf "  %-12s ▏ " "$dt"
-        if (( detected_count > 0 )); then
-            echo -e "${C_RED}检出引擎: $detected_count / $total_tested${C_RESET} ${SYM_WARN}"
+        if [[ "$had_detection" == "true" ]]; then
+            printf "│  ${C_YELLOW}⚠️ 曾有检出${C_RESET}\n"
         else
-            echo -e "${C_GREEN}全部通过 (0/$total_tested)${C_RESET} ${SYM_CHECK}"
+            printf "│  ${C_GREEN}✅ 保持安全${C_RESET}\n"
         fi
     done
     echo ""
+}
+
+show_risk_factor() {
+    clear
+    select_time_range || return
+    clear
+    print_module_header "🔬 风险因子综合矩阵与历史追踪"
+
+    # 1. IPv4 风险因子矩阵与全量历史
+    render_risk_factor_matrix "$V4_DIR" "IPv4"
+    render_risk_factor_history "$V4_DIR" "IPv4"
+
+    # 2. IPv6 (如果有) 风险因子矩阵与全量历史
+    local v6_cnt
+    v6_cnt=$(ls -1 "$V6_DIR"/*.json 2>/dev/null | wc -l)
+    if (( v6_cnt > 0 )); then
+        echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}\n"
+        render_risk_factor_matrix "$V6_DIR" "IPv6"
+        render_risk_factor_history "$V6_DIR" "IPv6"
+    fi
+
+    echo -e "图例说明: ${SYM_DOT_GREEN} 安全/未检出  ${SYM_MARK_RED} 风险检出(警告)  ${SYM_DOT_GRAY} 未检测/不支持\n"
     read -r -p "按回车键返回主菜单..."
 }
 
@@ -1164,61 +1185,56 @@ setup_cron() {
 # ==============================================================================
 # 模块 6: 查看历史存档快照 (view_archives - 图形图表化美化版，双栈合并展示)
 # ==============================================================================
-render_archive_snapshot() {
+render_single_archive_card() {
     local f="$1"
     local proto_tag="$2"
-    clear
-
-    local fname
-    fname=$(basename "$f" .json)
-    local dt
-    dt=$(fmt_timestamp "$fname")
+    [[ ! -f "$f" ]] && return
 
     local ip asn org city country ip_type usage_ipinfo usage_ip2l
-    ip=$(jq -r '.Head.IP // "未知"' "$f")
-    asn=$(jq -r '.Info.ASN // "--"' "$f")
+    ip=$(jq -r '.Head.IP // "未知"' "$f" 2>/dev/null)
+    asn=$(jq -r '.Info.ASN // "--"' "$f" 2>/dev/null)
     [[ "$asn" =~ ^[0-9]+$ ]] && asn="AS$asn"
-    org=$(jq -r '.Info.Organization // "--"' "$f")
-    city=$(jq -r '.Info.City.Name // ""' "$f")
-    country=$(jq -r '.Info.Region.Name // ""' "$f")
+    org=$(jq -r '.Info.Organization // "--"' "$f" 2>/dev/null)
+    city=$(jq -r '.Info.City.Name // ""' "$f" 2>/dev/null)
+    country=$(jq -r '.Info.Region.Name // ""' "$f" 2>/dev/null)
     [[ "$city" == "null" ]] && city=""
     [[ "$country" == "null" ]] && country=""
     local loc="未知"
     if [[ -n "$city" && -n "$country" ]]; then loc="$city, $country"; elif [[ -n "$country" ]]; then loc="$country"; elif [[ -n "$city" ]]; then loc="$city"; fi
 
-    ip_type=$(jq -r '.Info.Type // "--"' "$f" | sed 's/Geo-consistent/原生IP/;s/Geo-discrepant/广播IP/')
-    usage_ipinfo=$(jq -r '.Type.Usage.IPinfo // "--"' "$f")
-    usage_ip2l=$(jq -r '.Type.Usage.IP2LOCATION // "--"' "$f")
+    ip_type=$(jq -r '.Info.Type // "--"' "$f" 2>/dev/null | sed 's/Geo-consistent/原生IP/;s/Geo-discrepant/广播IP/')
+    usage_ipinfo=$(jq -r '.Type.Usage.IPinfo // "--"' "$f" 2>/dev/null)
+    usage_ip2l=$(jq -r '.Type.Usage.IP2LOCATION // "--"' "$f" 2>/dev/null)
 
-    print_module_header "📋 历史存档检测快照: $dt [$proto_tag]"
+    local proto_color="$C_GREEN"
+    [[ "$proto_tag" == "IPv6" ]] && proto_color="$C_CYAN"
 
+    echo -e "${proto_color}${C_BOLD}┌── [$proto_tag 检测快照卡片] ──────────────────────────────────────────┐${C_RESET}"
     echo -e "  ${C_CYAN}📡 节点 IP  :${C_RESET} ${C_BOLD}${ip}${C_RESET} ($proto_tag)"
     echo -e "  ${C_CYAN}🏢 组织/ASN :${C_RESET} ${asn} (${org})"
     echo -e "  ${C_CYAN}📍 地理位置 :${C_RESET} ${loc}"
     echo -e "  ${C_CYAN}🏷️ 属性类型 :${C_RESET} ${C_GREEN}${ip_type}${C_RESET} │ IPinfo: ${usage_ipinfo} │ IP2Location: ${usage_ip2l}"
-    echo ""
 
     # 风控评分
-    echo -e "${C_GRAY}── ${C_CYAN}📊 权威风控评分${C_RESET} ${C_GRAY}───────────────────────────────────────────────────${C_RESET}"
+    echo -e "  ${C_GRAY}── 📊 权威风控评分 ─────────────────────────────────────────────────${C_RESET}"
     local score_dbs=("SCAMALYTICS" "IP2LOCATION" "AbuseIPDB" "IPQS" "ipapi" "DBIP")
     for sdb in "${score_dbs[@]}"; do
         local sc
-        sc=$(jq -r ".Score.$sdb // \"null\"" "$f")
-        printf "  • %-13s ▏ " "$sdb"
+        sc=$(jq -r ".Score.$sdb // \"null\"" "$f" 2>/dev/null)
+        printf "    • %-13s ▏ " "$sdb"
         render_bar "$sc"
     done
-    echo ""
 
     # 风险因子
-    echo -e "${C_GRAY}── ${C_CYAN}🔬 核心风险因子检出${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
+    echo -e "  ${C_GRAY}── 🔬 核心安全因子 ─────────────────────────────────────────────────${C_RESET}"
     local factors=("Proxy" "Tor" "VPN" "Server" "Abuser" "Robot")
-    local factor_line=" "
+    local factor_line="   "
     for fac in "${factors[@]}"; do
         local engines=("IP2LOCATION" "ipapi" "ipregistry" "IPQS" "SCAMALYTICS" "ipdata" "IPinfo" "IPWHOIS" "DBIP")
         local is_detected=false
         for eng in "${engines[@]}"; do
             local val
-            val=$(jq -r "if .Factor[\"$fac\"][\"$eng\"] != null then .Factor[\"$fac\"][\"$eng\"] else .Factor[\"$fac\"][\"WHOIS\"] end" "$f")
+            val=$(jq -r "if .Factor[\"$fac\"][\"$eng\"] != null then .Factor[\"$fac\"][\"$eng\"] else .Factor[\"$fac\"][\"WHOIS\"] end" "$f" 2>/dev/null)
             if [[ "$val" == "true" ]]; then
                 is_detected=true
                 break
@@ -1231,18 +1247,17 @@ render_archive_snapshot() {
         fi
     done
     echo -e "$factor_line"
-    echo ""
 
     # 流媒体解锁
-    echo -e "${C_GRAY}── ${C_CYAN}🎬 流媒体与 AI 解锁${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
+    echo -e "  ${C_GRAY}── 🎬 流媒体与 AI 解锁 ─────────────────────────────────────────────${C_RESET}"
     local media_list=("Youtube" "Netflix" "DisneyPlus" "TikTok" "ChatGPT" "Reddit")
     local media_names=("YouTube" "Netflix" "Disney+" "TikTok" "ChatGPT" "Reddit")
     for ((m_i=0; m_i<${#media_list[@]}; m_i++)); do
         local m_key="${media_list[$m_i]}"
         local m_name="${media_names[$m_i]}"
         local st reg
-        st=$(jq -r ".Media.$m_key.Status // \"未知\"" "$f")
-        reg=$(jq -r ".Media.$m_key.Region // \"\"" "$f")
+        st=$(jq -r ".Media.$m_key.Status // \"未知\"" "$f" 2>/dev/null)
+        reg=$(jq -r ".Media.$m_key.Region // \"\"" "$f" 2>/dev/null)
         [[ "$reg" == "null" ]] && reg=""
 
         local st_badge
@@ -1257,43 +1272,100 @@ render_archive_snapshot() {
         else
             st_badge="${C_GRAY}$st${C_RESET}"
         fi
-        printf "  • %-10s: %b\n" "$m_name" "$st_badge"
+        printf "    • %-10s: %b\n" "$m_name" "$st_badge"
     done
-    echo ""
 
     # 邮件与 DNS 黑名单
-    echo -e "${C_GRAY}── ${C_CYAN}📬 邮件连通与 DNS 黑名单${C_RESET} ${C_GRAY}───────────────────────────────────────────${C_RESET}"
+    echo -e "  ${C_GRAY}── 📬 邮件连通与 DNS 黑名单 ─────────────────────────────────────────${C_RESET}"
     local p25
-    p25=$(jq -r '.Mail.Port25 // "null"' "$f")
+    p25=$(jq -r '.Mail.Port25 // "null"' "$f" 2>/dev/null)
     if [[ "$p25" == "true" ]]; then
-        echo -e "  • 25 端口出站 (Port 25): ${C_GREEN}✓ 开放${C_RESET}"
+        echo -e "    • 25 端口出站 (Port 25): ${C_GREEN}✓ 开放${C_RESET}"
     elif [[ "$p25" == "false" ]]; then
-        echo -e "  • 25 端口出站 (Port 25): ${C_RED}✗ 拦截/封禁${C_RESET}"
+        echo -e "    • 25 端口出站 (Port 25): ${C_RED}✗ 拦截/封禁${C_RESET}"
     else
-        echo -e "  • 25 端口出站 (Port 25): ${C_GRAY}未检出${C_RESET}"
+        echo -e "    • 25 端口出站 (Port 25): ${C_GRAY}未检出${C_RESET}"
     fi
 
-    local bl_total bl_clean bl_blk
-    bl_total=$(jq -r '.Mail.DNSBlacklist.Total // 0' "$f")
-    bl_clean=$(jq -r '.Mail.DNSBlacklist.Clean // 0' "$f")
-    bl_blk=$(jq -r '.Mail.DNSBlacklist.Blacklisted // 0' "$f")
+    local bl_total bl_blk
+    bl_total=$(jq -r '.Mail.DNSBlacklist.Total // 0' "$f" 2>/dev/null)
+    bl_blk=$(jq -r '.Mail.DNSBlacklist.Blacklisted // 0' "$f" 2>/dev/null)
     if (( bl_blk == 0 )); then
-        echo -e "  • DNS 黑名单拦截       : ${C_GREEN}0 / $bl_total 数据库 (全部干净通过)${C_RESET}"
+        echo -e "    • DNS 黑名单拦截       : ${C_GREEN}0 / $bl_total 数据库 (全部干净通过)${C_RESET}"
     else
-        echo -e "  • DNS 黑名单拦截       : ${C_RED}$bl_blk / $bl_total 数据库检出拦截！${C_RESET}"
+        echo -e "    • DNS 黑名单拦截       : ${C_RED}$bl_blk / $bl_total 数据库检出拦截！${C_RESET}"
     fi
-    echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}"
+    echo -e "${proto_color}└──────────────────────────────────────────────────────────────────────┘${C_RESET}"
+}
 
+find_matching_v6() {
+    local target_ts="$1"
+    local direct="$V6_DIR/${target_ts}.json"
+    if [[ -f "$direct" ]]; then
+        echo "$direct"
+        return
+    fi
+    for f6 in "$V6_DIR"/*.json; do
+        [[ ! -f "$f6" ]] && continue
+        local fn6
+        fn6=$(basename "$f6" .json)
+        # 简单比对前 13 个字符 (YYYY-MM-DD_HH)
+        if [[ "${fn6:0:13}" == "${target_ts:0:13}" ]]; then
+            echo "$f6"
+            return
+        fi
+    done
+    echo ""
+}
+
+render_archive_snapshot() {
+    local v4_f="$1"
+    local v6_f="$2"
+    local ts="$3"
+
+    clear
+    local dt
+    dt=$(fmt_timestamp "$ts")
+    print_module_header "📋 历史存档双栈快照: $dt"
+
+    local rendered=false
+    if [[ -f "$v4_f" ]]; then
+        render_single_archive_card "$v4_f" "IPv4"
+        rendered=true
+    fi
+
+    if [[ -n "$v6_f" && -f "$v6_f" ]]; then
+        [[ "$rendered" == "true" ]] && echo ""
+        render_single_archive_card "$v6_f" "IPv6"
+        rendered=true
+    fi
+
+    if [[ "$rendered" == "false" ]]; then
+        echo -e "${C_YELLOW}未找到该时段的有效存档文件${C_RESET}\n"
+        read -r -p "按回车键返回..."
+        return
+    fi
+
+    echo ""
     echo -ne "操作: ${C_CYAN}[j]${C_RESET} 查看底层原始 JSON | ${C_CYAN}[0/回车]${C_RESET} 返回列表: "
     read -r sub_view
     if [[ "$sub_view" == "j" || "$sub_view" == "J" ]]; then
+        local target_f="$v4_f"
+        if [[ -f "$v4_f" && -n "$v6_f" && -f "$v6_f" ]]; then
+            echo -ne "请选择要查看的协议 JSON: ${C_GREEN}[1] IPv4${C_RESET}  ${C_CYAN}[2] IPv6${C_RESET} [默认 1]: "
+            read -r j_choice
+            [[ "$j_choice" == "2" ]] && target_f="$v6_f"
+        elif [[ -n "$v6_f" && -f "$v6_f" ]]; then
+            target_f="$v6_f"
+        fi
+
         clear
-        echo -e "${C_BOLD}文件路径: $f${C_RESET}\n"
+        echo -e "${C_BOLD}文件路径: $target_f${C_RESET}\n"
         if command -v jq >/dev/null 2>&1; then
-            jq . "$f" | head -n 80
-            echo -e "\n${C_GRAY}(展示前 80 行，完整文件位于 $f)${C_RESET}"
+            jq . "$target_f" | head -n 80
+            echo -e "\n${C_GRAY}(展示前 80 行，完整文件位于 $target_f)${C_RESET}"
         else
-            cat "$f"
+            cat "$target_f"
         fi
         echo ""
         read -r -p "按回车键返回..."
@@ -1304,57 +1376,65 @@ view_archives() {
     clear
     print_module_header "📋 历史存档图表快照查看"
 
-    # 收集 v4 和 v6 存档 (双栈一键展示，无需选择)
-    local all_items=() # 元素格式: "timestamp|proto|filepath"
+    # 收集全部不重复的时间戳 (双栈一体，无需区分选择)
+    local all_ts=()
     for f in "$V4_DIR"/*.json; do
-        [[ -f "$f" ]] && all_items+=("$(basename "$f" .json)|IPv4|$f")
+        [[ -f "$f" ]] && all_ts+=("$(basename "$f" .json)")
     done
     for f in "$V6_DIR"/*.json; do
-        [[ -f "$f" ]] && all_items+=("$(basename "$f" .json)|IPv6|$f")
+        [[ -f "$f" ]] && all_ts+=("$(basename "$f" .json)")
     done
 
-    if [[ ${#all_items[@]} -eq 0 ]]; then
+    if [[ ${#all_ts[@]} -eq 0 ]]; then
         echo -e "${C_YELLOW}暂无任何历史存档数据，请先执行一次检测 (选项 8)${C_RESET}\n"
         read -r -p "按回车键返回..."
         return
     fi
 
-    # 按时间降序排序 (最新在前)
-    local sorted_items=()
-    mapfile -t sorted_items < <(printf "%s\n" "${all_items[@]}" | sort -r)
+    local sorted_ts=()
+    mapfile -t sorted_ts < <(printf "%s\n" "${all_ts[@]}" | sort -u -r)
 
     local max_show=15
-    local show_count=$(( ${#sorted_items[@]} < max_show ? ${#sorted_items[@]} : max_show ))
+    local show_count=$(( ${#sorted_ts[@]} < max_show ? ${#sorted_ts[@]} : max_show ))
 
-    echo -e "最近检测归档列表 (双栈合并，展示最新 $show_count 份):\n"
+    echo -e "最近检测归档列表 (双栈合并，展示最新 $show_count 次记录):\n"
     for ((i=0; i<show_count; i++)); do
-        local item="${sorted_items[$i]}"
-        IFS='|' read -r i_ts i_proto i_file <<< "$item"
+        local ts="${sorted_ts[$i]}"
         local dt
-        dt=$(fmt_timestamp "$i_ts")
-        local sz
-        sz=$(du -h "$i_file" | awk '{print $1}')
-        local ip
-        ip=$(jq -r '.Head.IP // "未知"' "$i_file" 2>/dev/null)
-        local loc_c
-        loc_c=$(jq -r '.Info.Region.Name // ""' "$i_file" 2>/dev/null)
-        [[ "$loc_c" == "null" ]] && loc_c=""
+        dt=$(fmt_timestamp "$ts")
 
-        local proto_color="$C_GREEN"
-        [[ "$i_proto" == "IPv6" ]] && proto_color="$C_CYAN"
+        local f_v4="$V4_DIR/${ts}.json"
+        local f_v6
+        f_v6=$(find_matching_v6 "$ts")
 
-        printf "  ${C_BOLD}[%2d]${C_RESET} ${proto_color}[%-4s]${C_RESET} %-19s │ %-18s │ %s %s\n" \
-            "$((i + 1))" "$i_proto" "$dt" "${ip:0:18}" "$sz" "${loc_c:+($loc_c)}"
+        local ip_v4="无"
+        local ip_v6="无"
+        local loc_str=""
+
+        if [[ -f "$f_v4" ]]; then
+            ip_v4=$(jq -r '.Head.IP // "未知"' "$f_v4" 2>/dev/null)
+            loc_str=$(jq -r '.Info.Region.Name // ""' "$f_v4" 2>/dev/null)
+        fi
+        if [[ -n "$f_v6" && -f "$f_v6" ]]; then
+            ip_v6=$(jq -r '.Head.IP // "未知"' "$f_v6" 2>/dev/null)
+            [[ -z "$loc_str" || "$loc_str" == "null" ]] && loc_str=$(jq -r '.Info.Region.Name // ""' "$f_v6" 2>/dev/null)
+        fi
+        [[ "$loc_str" == "null" ]] && loc_str=""
+
+        printf "  ${C_BOLD}[%2d]${C_RESET} %-19s │ ${C_GREEN}v4:${C_RESET} %-15s │ ${C_CYAN}v6:${C_RESET} %-18s │ %s\n" \
+            "$((i + 1))" "$dt" "${ip_v4:0:15}" "${ip_v6:0:18}" "${loc_str:+($loc_str)}"
     done
 
     echo ""
-    echo -ne "${C_CYAN}请输入存档编号查看图形化快照 (输入 0 返回): ${C_RESET}"
+    echo -ne "${C_CYAN}请输入记录编号查看完整图表快照 (输入 0 返回): ${C_RESET}"
     read -r idx_opt
 
     if [[ "$idx_opt" =~ ^[0-9]+$ ]] && (( idx_opt >= 1 && idx_opt <= show_count )); then
-        local chosen_item="${sorted_items[$((idx_opt - 1))]}"
-        IFS='|' read -r c_ts c_proto c_file <<< "$chosen_item"
-        render_archive_snapshot "$c_file" "$c_proto"
+        local chosen_ts="${sorted_ts[$((idx_opt - 1))]}"
+        local sel_v4="$V4_DIR/${chosen_ts}.json"
+        local sel_v6
+        sel_v6=$(find_matching_v6 "$chosen_ts")
+        render_archive_snapshot "$sel_v4" "$sel_v6" "$chosen_ts"
     fi
 }
 

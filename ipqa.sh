@@ -445,6 +445,8 @@ compare_and_alert() {
         local old_score new_score
         old_score=$(jq -r ".Score.$sk // empty" "$prev_file")
         new_score=$(jq -r ".Score.$sk // empty" "$new_file")
+        old_score=$(normalize_score "$old_score")
+        new_score=$(normalize_score "$new_score")
         if [[ "$old_score" =~ ^[0-9]+$ && "$new_score" =~ ^[0-9]+$ ]]; then
             local diff=$((new_score - old_score))
             if (( diff >= SCORE_DIFF_THRESHOLD )); then
@@ -962,8 +964,48 @@ show_ip_type() {
 # ==============================================================================
 # 模块 2: 风险评分趋势 (show_risk_score)
 # ==============================================================================
+
+# 标准化评分值: 将 "1.56%" -> 2, "4.69%" -> 5, "47" -> 47, "null" -> ""
+# 上游 ipapi 数据库返回的是百分比字符串而非整数，需要统一处理
+normalize_score() {
+    local raw="$1"
+    [[ -z "$raw" || "$raw" == "null" || "$raw" == "" ]] && return
+    # 纯整数直接返回
+    if [[ "$raw" =~ ^[0-9]+$ ]]; then
+        echo "$raw"
+        return
+    fi
+    # 百分比格式: "1.56%" "4.69%" "0.12%" -> 提取数值部分并四舍五入为整数
+    if [[ "$raw" =~ ^([0-9]+)\.?([0-9]*)%?$ ]]; then
+        local int_part="${BASH_REMATCH[1]}"
+        local dec_part="${BASH_REMATCH[2]}"
+        # 四舍五入: 取小数点后第一位判断
+        local first_dec="${dec_part:0:1}"
+        if [[ -n "$first_dec" && "$first_dec" -ge 5 ]] 2>/dev/null; then
+            echo $(( int_part + 1 ))
+        else
+            echo "$int_part"
+        fi
+        return
+    fi
+    # 纯小数 (无百分号): "1.56" -> 2
+    if [[ "$raw" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+        local int_part="${BASH_REMATCH[1]}"
+        local dec_part="${BASH_REMATCH[2]}"
+        local first_dec="${dec_part:0:1}"
+        if [[ -n "$first_dec" && "$first_dec" -ge 5 ]] 2>/dev/null; then
+            echo $(( int_part + 1 ))
+        else
+            echo "$int_part"
+        fi
+        return
+    fi
+    # 无法识别的格式，静默丢弃
+}
+
 render_bar() {
-    local score="$1"
+    local score
+    score=$(normalize_score "$1")
     local max_width=30
     if [[ ! "$score" =~ ^[0-9]+$ ]]; then
         echo -e "${C_GRAY}┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈  无数据${C_RESET}"
@@ -1018,6 +1060,7 @@ render_risk_score_chart() {
         for f in "${files[@]}"; do
             local sc
             sc=$(jq -r ".Score.$db // \"null\"" "$f" 2>/dev/null)
+            sc=$(normalize_score "$sc")
             if [[ "$sc" =~ ^[0-9]+$ ]]; then
                 db_has_score=true
                 break
@@ -1647,6 +1690,7 @@ render_single_archive_card() {
         ) | .[]
     ' "$f" 2>/dev/null)
     while IFS=$'\t' read -r sdb sc; do
+        sc=$(normalize_score "$sc")
         if [[ "$sc" =~ ^[0-9]+$ ]]; then
             printf "    • %-13s ▏ " "$sdb"
             render_bar "$sc"

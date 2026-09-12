@@ -73,7 +73,7 @@ print_module_header() {
 # ==============================================================================
 load_config() {
     # 默认值
-    CHECK_INTERVAL_HOURS=6
+    CHECK_INTERVAL_HOURS=24
     HAS_V6="auto"
     V6_CHECK_COUNT=0
     V6_PROBE_INTERVAL=10
@@ -93,7 +93,7 @@ load_config() {
 save_config() {
     cat <<EOF > "$CONFIG_FILE"
 # IPQA Configuration
-CHECK_INTERVAL_HOURS=${CHECK_INTERVAL_HOURS:-6}
+CHECK_INTERVAL_HOURS=${CHECK_INTERVAL_HOURS:-24}
 HAS_V6="${HAS_V6:-auto}"
 V6_CHECK_COUNT=${V6_CHECK_COUNT:-0}
 V6_PROBE_INTERVAL=${V6_PROBE_INTERVAL:-10}
@@ -115,6 +115,61 @@ pad_cell() {
     local pad=$(( target_width - w ))
     [[ $pad -lt 0 ]] && pad=0
     printf "%s%*s" "$text" "$pad" ""
+}
+
+# 自动计算服务器当前时区下对应“北京时间凌晨 04:00”的小时数 (0-23)
+get_beijing_4am_local_hour() {
+    local h
+    h=$(date -d 'TZ="Asia/Shanghai" 04:00' +%H 2>/dev/null | sed 's/^0//')
+    if [[ -z "$h" || ! "$h" =~ ^[0-9]+$ ]]; then
+        local z
+        z=$(date +%z)
+        local sign="${z:0:1}"
+        local zh="${z:1:2}"
+        local zm="${z:3:2}"
+        local local_offset_sec=$(( (10#$zh * 3600) + (10#$zm * 60) ))
+        [[ "$sign" == "-" ]] && local_offset_sec=$(( -local_offset_sec ))
+        local local_sec=$(( -14400 + local_offset_sec ))
+        local mod_sec=$(( local_sec % 86400 ))
+        (( mod_sec < 0 )) && mod_sec=$(( mod_sec + 86400 ))
+        h=$(( mod_sec / 3600 ))
+    fi
+    echo "$h"
+}
+
+# 自动检查并清理旧版定时检测任务，升级应用新默认: 每天北京时间凌晨 04:00
+migrate_old_cron() {
+    local cron_line
+    cron_line=$(crontab -l 2>/dev/null | grep -E "ipqa(\.sh)? --cron" | head -n 1 || true)
+    [[ -z "$cron_line" ]] && return
+
+    local schedule
+    schedule=$(echo "$cron_line" | awk '{print $1,$2,$3,$4,$5}')
+    local local_h
+    local_h=$(get_beijing_4am_local_hour)
+    local target_default="0 $local_h * * *"
+
+    # 检查是否包含小于 1 天的旧频率 (如 0 * * * *, 0 */3 * * *, 0 */6 * * *, 0 */12 * * *)
+    # 或旧版未做时区校准的 0 4 * * * (当服务器不是 UTC+8 时)
+    local need_migrate=false
+    if [[ "$schedule" =~ ^0\ \*(/[0-9]+)?\ \* ]] || [[ "$schedule" =~ ^0\ \*/ ]] || [[ "$schedule" == "0 * * * *" ]]; then
+        need_migrate=true
+    elif [[ "$schedule" == "0 4 * * *" && "$local_h" != "4" ]]; then
+        need_migrate=true
+    fi
+
+    if [[ "$need_migrate" == "true" ]]; then
+        local script_path
+        script_path="$(command -v ipqa 2>/dev/null || echo "$IPQA_HOME/ipqa.sh")"
+        local remaining
+        remaining=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
+        {
+            [[ -n "$remaining" ]] && echo "$remaining"
+            echo "# IPQA AUTO CHECK - DO NOT EDIT MANUALLY"
+            echo "$target_default $script_path --cron >> $IPQA_HOME/logs/ipqa.log 2>&1"
+        } | crontab -
+        log_msg "INFO" "自动清理旧版定时检测任务 ($schedule)，已应用新默认规则: 每天北京时间凌晨 04:00 (本机: $local_h:00, Cron: $target_default)"
+    fi
 }
 
 log_msg() {
@@ -1183,42 +1238,60 @@ setup_cron() {
     load_config
     print_module_header "⚙️  设置后台定时自动检测与存档"
 
+    local local_h
+    local_h=$(get_beijing_4am_local_hour)
+    local tz_name tz_offset server_time bj_time
+    tz_name=$(date +%Z)
+    tz_offset=$(date +%z)
+    server_time=$(date '+%H:%M')
+    bj_time=$(TZ="Asia/Shanghai" date '+%H:%M' 2>/dev/null || echo "--:--")
+
+    echo -e "  ${C_GRAY}ℹ️  服务器时区: ${C_CYAN}${tz_name} (${tz_offset})${C_GRAY} │ 本机时间: ${C_BOLD}${server_time}${C_RESET}${C_GRAY} │ 北京时间: ${C_BOLD}${bj_time}${C_RESET}"
+    echo -e "  ${C_YELLOW}💡 提示: 预设选项已按北京时间凌晨 04:00 自动换算 (对应本机服务器时间: ${C_BOLD}${local_h}:00${C_RESET}${C_YELLOW})${C_RESET}\n"
+
     # 检测当前 crontab 中是否有 ipqa 任务
     local current_cron
     current_cron=$(crontab -l 2>/dev/null | grep -E "ipqa(\.sh)? --cron" | head -n 1 || true)
 
     if [[ -n "$current_cron" ]]; then
-        echo -e "当前状态: ${C_GREEN}已启用自动检测${C_RESET}"
+        local cur_sched
+        cur_sched=$(echo "$current_cron" | awk '{print $1,$2,$3,$4,$5}')
+        local friendly_name="$cur_sched"
+        if [[ "$cur_sched" == "0 $local_h * * *" ]]; then
+            friendly_name="每天一次 (北京时间 04:00)"
+        elif [[ "$cur_sched" == "0 $local_h */3 * *" ]]; then
+            friendly_name="每 3 天一次 (北京时间 04:00)"
+        elif [[ "$cur_sched" == "0 $local_h */7 * *" ]]; then
+            friendly_name="每 7 天一次 (北京时间 04:00)"
+        fi
+        echo -e "当前状态: ${C_GREEN}已启用自动检测${C_RESET} [${friendly_name}]"
         echo -e "当前规则: ${C_YELLOW}$current_cron${C_RESET}\n"
     else
         echo -e "当前状态: ${C_GRAY}未配置定时检测${C_RESET}\n"
     fi
 
     echo -e "${C_BOLD}请选择定时检测周期:${C_RESET}"
-    echo -e "  [1] 每 1 小时检测一次   (0 * * * *)"
-    echo -e "  [2] 每 3 小时检测一次   (0 */3 * * *)"
-    echo -e "  [3] 每 6 小时检测一次   (0 */6 * * *) [推荐]"
-    echo -e "  [4] 每 12 小时检测一次  (0 */12 * * *)"
-    echo -e "  [5] 每天凌晨 4 点检测   (0 4 * * *)"
-    echo -e "  [6] 自定义 Cron 表达式"
-    echo -e "  [7] 关闭/移除定时检测"
+    echo -e "  [1] 每天检测一次     (北京时间 04:00 / 本机 $local_h:00) [推荐/默认]"
+    echo -e "  [2] 每 3 天检测一次  (北京时间 04:00 / 本机 $local_h:00)"
+    echo -e "  [3] 每 7 天检测一次  (北京时间 04:00 / 本机 $local_h:00)"
+    echo -e "  [4] 自定义 Cron 表达式"
+    echo -e "  [5] 关闭/移除定时检测"
     echo -e "  [0] 返回主菜单"
     echo ""
-    echo -ne "${C_CYAN}请输入选项: ${C_RESET}"
+    echo -ne "${C_CYAN}请输入选项 [默认 1]: ${C_RESET}"
     read -r opt
+    opt="${opt:-1}"
 
     local new_cron_expr=""
     case "$opt" in
-        1) new_cron_expr="0 * * * *" ;;
-        2) new_cron_expr="0 */3 * * *" ;;
-        3) new_cron_expr="0 */6 * * *" ;;
-        4) new_cron_expr="0 */12 * * *" ;;
-        5) new_cron_expr="0 4 * * *" ;;
-        6)
-            echo -ne "\n请输入 5 位 Cron 表达式 (如: 30 */4 * * *): "
+        1) new_cron_expr="0 $local_h * * *" ;;
+        2) new_cron_expr="0 $local_h */3 * *" ;;
+        3) new_cron_expr="0 $local_h */7 * *" ;;
+        4)
+            echo -ne "\n请输入 5 位 Cron 表达式 (如: 0 $local_h */5 * *): "
             read -r new_cron_expr
             ;;
-        7)
+        5)
             # 移除所有历史 IPQA cron (去重清理)
             local remaining
             remaining=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
@@ -1235,6 +1308,12 @@ setup_cron() {
         0) return ;;
         *) echo -e "${C_RED}无效选项${C_RESET}"; sleep 1; return ;;
     esac
+
+    if [[ -z "$new_cron_expr" ]]; then
+        echo -e "${C_RED}Cron 表达式不能为空${C_RESET}"
+        sleep 1
+        return
+    fi
 
     # 确定脚本执行绝对路径
     local script_path
@@ -1254,8 +1333,9 @@ setup_cron() {
     } | crontab -
 
     echo -e "\n${C_GREEN}✔ 定时检测配置成功！${C_RESET}"
-    echo -e "设定规则: ${C_CYAN}$new_cron_expr $script_path --cron${C_RESET}\n"
-    log_msg "INFO" "配置定时任务: $new_cron_expr"
+    echo -e "设定规则: ${C_CYAN}$new_cron_expr $script_path --cron${C_RESET}"
+    echo -e "执行周期: ${C_YELLOW}北京时间凌晨 04:00 (本机服务器时间 $local_h:00)${C_RESET}\n"
+    log_msg "INFO" "配置定时任务: $new_cron_expr (北京时间 04:00 对应本机 $local_h:00)"
     read -r -p "按回车键返回..."
 }
 
@@ -1777,15 +1857,18 @@ render_panel() {
     if [[ -n "$cron_line" ]]; then
         local schedule
         schedule=$(echo "$cron_line" | awk '{print $1,$2,$3,$4,$5}')
-        case "$schedule" in
-            "0 * * * *") cron_status="已启用 (每小时)" ;;
-            "0 */3 * * *") cron_status="已启用 (每 3 小时)" ;;
-            "0 */6 * * *") cron_status="已启用 (每 6 小时)" ;;
-            "0 */12 * * *") cron_status="已启用 (每 12 小时)" ;;
-            "0 4 * * *") cron_status="已启用 (每天)" ;;
-            *) cron_status="已启用 ($schedule)" ;;
-        esac
-        cron_colored="${C_GREEN}${cron_status}${C_RESET}"
+        local local_h
+        local_h=$(get_beijing_4am_local_hour)
+        if [[ "$schedule" == "0 $local_h * * *" ]]; then
+            cron_status="每天 (北京 04:00)"
+        elif [[ "$schedule" == "0 $local_h */3 * *" ]]; then
+            cron_status="每 3 天 (北京 04:00)"
+        elif [[ "$schedule" == "0 $local_h */7 * *" ]]; then
+            cron_status="每 7 天 (北京 04:00)"
+        else
+            cron_status="$schedule"
+        fi
+        cron_colored="${C_GREEN}开启 [${cron_status}]${C_RESET}"
     fi
 
     local asn_display="$asn"
@@ -1838,6 +1921,7 @@ render_panel() {
 main_loop() {
     check_dependencies
     load_config
+    migrate_old_cron
 
     while true; do
         render_panel
@@ -1876,6 +1960,7 @@ main_loop() {
 case "$1" in
     --cron)
         check_dependencies
+        migrate_old_cron
         run_check true
         ;;
     --check)

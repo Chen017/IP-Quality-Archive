@@ -445,18 +445,38 @@ compare_and_alert() {
         fi
     done
 
-    # 3. 对比风险评分上升
+    # 3. 对比各风控数据库等级变动 (基于各官方标准判定等级跨越，非简单固定分值相减)
     local score_keys=("IP2LOCATION" "SCAMALYTICS" "ipapi" "AbuseIPDB" "IPQS" "DBIP")
     for sk in "${score_keys[@]}"; do
-        local old_score new_score
-        old_score=$(jq -r ".Score.$sk // empty" "$prev_file")
-        new_score=$(jq -r ".Score.$sk // empty" "$new_file")
-        old_score=$(normalize_score "$old_score")
-        new_score=$(normalize_score "$new_score")
-        if [[ "$old_score" =~ ^[0-9]+$ && "$new_score" =~ ^[0-9]+$ ]]; then
-            local diff=$((new_score - old_score))
-            if (( diff >= SCORE_DIFF_THRESHOLD )); then
-                add_alert "WARNING" "$sk 风险评分大幅上升 +$diff ($old_score -> $new_score)" "$ip_ver"
+        local old_raw new_raw
+        old_raw=$(jq -r ".Score.$sk // empty" "$prev_file")
+        new_raw=$(jq -r ".Score.$sk // empty" "$new_file")
+        [[ -z "$old_raw" || "$old_raw" == "null" || -z "$new_raw" || "$new_raw" == "null" ]] && continue
+
+        local old_badge_info new_badge_info
+        old_badge_info=$(get_risk_badge "$old_raw" "$sk")
+        new_badge_info=$(get_risk_badge "$new_raw" "$sk")
+        [[ -z "$old_badge_info" || -z "$new_badge_info" ]] && continue
+
+        local old_badge new_badge
+        old_badge=$(echo "$old_badge_info" | cut -d'|' -f1)
+        new_badge=$(echo "$new_badge_info" | cut -d'|' -f1)
+
+        if [[ -n "$old_badge" && -n "$new_badge" && "$old_badge" != "$new_badge" ]]; then
+            local old_rank new_rank
+            old_rank=$(get_risk_level_rank "$old_badge")
+            new_rank=$(get_risk_level_rank "$new_badge")
+
+            if (( new_rank > old_rank )); then
+                if (( new_rank >= 3 )); then
+                    add_alert "CRITICAL" "$sk 风险等级上升至 [$new_badge] (原: [$old_badge], 评分: $old_raw -> $new_raw)" "$ip_ver"
+                elif (( new_rank == 2 )); then
+                    add_alert "WARNING" "$sk 风险等级上升: [$old_badge] 变为 [$new_badge] (评分: $old_raw -> $new_raw)" "$ip_ver"
+                else
+                    add_alert "INFO" "$sk 风险等级变动: [$old_badge] 变为 [$new_badge] (评分: $old_raw -> $new_raw)" "$ip_ver"
+                fi
+            elif (( new_rank < old_rank )); then
+                add_alert "INFO" "$sk 风险等级改善恢复: [$old_badge] 恢复为 [$new_badge] (评分: $old_raw -> $new_raw)" "$ip_ver"
             fi
         fi
     done
@@ -1088,6 +1108,18 @@ get_risk_badge() {
             elif (( sc < 75 )); then echo "高风险|$C_RED"
             else echo "极高风险|$C_MAGENTA"; fi
             ;;
+    esac
+}
+
+get_risk_level_rank() {
+    local badge="$1"
+    case "$badge" in
+        "极低风险") echo 0 ;;
+        "低风险")   echo 1 ;;
+        "中风险"|"较高风险"|"可疑IP") echo 2 ;;
+        "存在风险"|"高风险") echo 3 ;;
+        "极高风险"|"建议封禁") echo 4 ;;
+        *) echo -1 ;;
     esac
 }
 

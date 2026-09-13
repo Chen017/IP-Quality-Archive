@@ -1003,39 +1003,150 @@ normalize_score() {
     # 无法识别的格式，静默丢弃
 }
 
+get_risk_badge() {
+    local raw="$1"
+    local db="$2"
+    [[ -z "$raw" || "$raw" == "null" || "$raw" == "" ]] && return
+
+    case "$db" in
+        ipapi)
+            # 处理百分比格式 (如 "2.34%", "0.73%", "0.10%", "5.2%") -> 转换为基点 bp (1% = 100 bp)
+            local num_str="${raw%%%}"
+            local bp=0
+            if [[ "$num_str" =~ ^([0-9]+)\.?([0-9]*)$ ]]; then
+                local int_p="${BASH_REMATCH[1]}"
+                local dec_p="${BASH_REMATCH[2]}00"
+                dec_p="${dec_p:0:2}"
+                bp=$(( 10#$int_p * 100 + 10#$dec_p ))
+            fi
+            if (( bp < 15 )); then
+                echo "极低风险|$C_GREEN"
+            elif (( bp < 85 )); then
+                echo "低风险|$C_GREEN"
+            elif (( bp < 300 )); then
+                echo "较高风险|$C_YELLOW"
+            elif (( bp < 1000 )); then
+                echo "高风险|$C_RED"
+            else
+                echo "极高风险|$C_MAGENTA"
+            fi
+            ;;
+        IP2LOCATION)
+            local sc
+            sc=$(normalize_score "$raw")
+            [[ ! "$sc" =~ ^[0-9]+$ ]] && return
+            if (( sc < 33 )); then echo "低风险|$C_GREEN"
+            elif (( sc < 66 )); then echo "中风险|$C_YELLOW"
+            else echo "高风险|$C_RED"; fi
+            ;;
+        SCAMALYTICS)
+            local sc
+            sc=$(normalize_score "$raw")
+            [[ ! "$sc" =~ ^[0-9]+$ ]] && return
+            if (( sc < 20 )); then echo "低风险|$C_GREEN"
+            elif (( sc < 60 )); then echo "中风险|$C_YELLOW"
+            elif (( sc < 90 )); then echo "高风险|$C_RED"
+            else echo "极高风险|$C_MAGENTA"; fi
+            ;;
+        AbuseIPDB)
+            local sc
+            sc=$(normalize_score "$raw")
+            [[ ! "$sc" =~ ^[0-9]+$ ]] && return
+            if (( sc < 25 )); then echo "低风险|$C_GREEN"
+            elif (( sc < 75 )); then echo "高风险|$C_RED"
+            else echo "建议封禁|$C_MAGENTA"; fi
+            ;;
+        IPQS)
+            local sc
+            sc=$(normalize_score "$raw")
+            [[ ! "$sc" =~ ^[0-9]+$ ]] && return
+            if (( sc < 75 )); then echo "低风险|$C_GREEN"
+            elif (( sc < 85 )); then echo "可疑IP|$C_YELLOW"
+            elif (( sc < 90 )); then echo "存在风险|$C_RED"
+            else echo "高风险|$C_RED"; fi
+            ;;
+        DBIP)
+            local sc
+            sc=$(normalize_score "$raw")
+            [[ ! "$sc" =~ ^[0-9]+$ ]] && return
+            if (( sc == 0 )); then echo "低风险|$C_GREEN"
+            elif (( sc == 50 )); then echo "中风险|$C_YELLOW"
+            else echo "高风险|$C_RED"; fi
+            ;;
+        *)
+            local sc
+            sc=$(normalize_score "$raw")
+            [[ ! "$sc" =~ ^[0-9]+$ ]] && return
+            if (( sc < 20 )); then echo "低风险|$C_GREEN"
+            elif (( sc < 50 )); then echo "中风险|$C_YELLOW"
+            elif (( sc < 75 )); then echo "高风险|$C_RED"
+            else echo "极高风险|$C_MAGENTA"; fi
+            ;;
+    esac
+}
+
 render_bar() {
-    local score
-    score=$(normalize_score "$1")
+    local raw="$1"
+    local db="${2:-}"
     local max_width=30
-    if [[ ! "$score" =~ ^[0-9]+$ ]]; then
+
+    if [[ -z "$raw" || "$raw" == "null" || "$raw" == "" ]]; then
         echo -e "${C_GRAY}┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈  无数据${C_RESET}"
         return
     fi
 
-    # 计算柱条长度
-    local bar_len=$(( score * max_width / 100 ))
-    (( bar_len == 0 && score > 0 )) && bar_len=1
-    local empty_len=$(( max_width - bar_len ))
-
-    local color="$C_GREEN"
-    local badge="低风险"
-    if (( score > 75 )); then
-        color="$C_MAGENTA"
-        badge="极高风险"
-    elif (( score > 50 )); then
-        color="$C_RED"
-        badge="高风险"
-    elif (( score > 20 )); then
-        color="$C_YELLOW"
-        badge="中风险"
+    local badge_info
+    badge_info=$(get_risk_badge "$raw" "$db")
+    if [[ -z "$badge_info" ]]; then
+        echo -e "${C_GRAY}┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈  无数据${C_RESET}"
+        return
     fi
 
+    local badge color
+    badge=$(echo "$badge_info" | cut -d'|' -f1)
+    color=$(echo "$badge_info" | cut -d'|' -f2)
+
+    local bar_len=0
+    local disp_score=""
+
+    if [[ "$db" == "ipapi" ]]; then
+        # ipapi 特殊处理: 百分比分值 & 三段式比例尺绘图
+        local num_str="${raw%%%}"
+        disp_score="${num_str}%"
+        local bp=0
+        if [[ "$num_str" =~ ^([0-9]+)\.?([0-9]*)$ ]]; then
+            local int_p="${BASH_REMATCH[1]}"
+            local dec_p="${BASH_REMATCH[2]}00"
+            dec_p="${dec_p:0:2}"
+            bp=$(( 10#$int_p * 100 + 10#$dec_p ))
+        fi
+        # 三段式映射 (绿区: 0-85 -> 0-10, 黄区: 85-300 -> 10-20, 红区: 300-10000 -> 20-30)
+        if (( bp < 85 )); then
+            bar_len=$(( bp * 10 / 85 ))
+        elif (( bp < 300 )); then
+            bar_len=$(( 10 + (bp - 85) * 10 / 215 ))
+        else
+            bar_len=$(( 20 + (bp - 300) * 10 / 9700 ))
+        fi
+        (( bar_len == 0 && bp > 0 )) && bar_len=1
+        (( bar_len > max_width )) && bar_len=max_width
+    else
+        # 常规 0-100 整数评分
+        local sc
+        sc=$(normalize_score "$raw")
+        disp_score="$sc"
+        bar_len=$(( sc * max_width / 100 ))
+        (( bar_len == 0 && sc > 0 )) && bar_len=1
+        (( bar_len > max_width )) && bar_len=max_width
+    fi
+
+    local empty_len=$(( max_width - bar_len ))
     local bar_str=""
     for ((b=0; b<bar_len; b++)); do bar_str+="█"; done
     local empty_str=""
     for ((b=0; b<empty_len; b++)); do empty_str+="░"; done
 
-    printf "${color}%s${C_RESET}${C_GRAY}%s${C_RESET} %3d ${color}%s${C_RESET}\n" "$bar_str" "$empty_str" "$score" "$badge"
+    printf "${color}%s${C_RESET}${C_GRAY}%s${C_RESET} %6s ${color}%s${C_RESET}\n" "$bar_str" "$empty_str" "$disp_score" "$badge"
 }
 
 render_risk_score_chart() {
@@ -1060,23 +1171,28 @@ render_risk_score_chart() {
         for f in "${files[@]}"; do
             local sc
             sc=$(jq -r ".Score.$db // \"null\"" "$f" 2>/dev/null)
-            sc=$(normalize_score "$sc")
-            if [[ "$sc" =~ ^[0-9]+$ ]]; then
-                db_has_score=true
-                break
+            if [[ -n "$sc" && "$sc" != "null" && "$sc" != "" ]]; then
+                local chk
+                chk=$(normalize_score "$sc")
+                if [[ "$chk" =~ ^[0-9]+$ ]]; then
+                    db_has_score=true
+                    break
+                fi
             fi
         done
         [[ "$db_has_score" == "false" ]] && continue
 
-        (( shown_db_count++ ))
-        echo -e "${C_BOLD}  • 数据库: ${C_CYAN}$db${C_RESET} (满分 100)"
+        (( ++shown_db_count ))
+        local db_unit="(满分 100)"
+        [[ "$db" == "ipapi" ]] && db_unit="(百分比分值)"
+        echo -e "${C_BOLD}  • 数据库: ${C_CYAN}$db${C_RESET} $db_unit"
         for f in "${files[@]}"; do
             local dt
             dt=$(fmt_short_time "$(basename "$f" .json)")
             local score
             score=$(jq -r ".Score.$db // \"null\"" "$f" 2>/dev/null)
             printf "    %-12s ▏ " "$dt"
-            render_bar "$score"
+            render_bar "$score" "$db"
         done
         echo ""
     done
@@ -1101,7 +1217,13 @@ show_risk_score() {
         render_risk_score_chart "$V6_DIR" "IPv6"
     fi
 
-    echo -e "${C_GRAY}说明: 评分越高风险越高。0-20 低风险 | 21-50 中风险 | 51-75 高风险 | 76+ 极高风险${C_RESET}\n"
+    echo -e "${C_GRAY}说明: 评分越高风险越高。各数据库遵循官方独立判定标准:${C_RESET}"
+    echo -e "${C_GRAY}  - Scamalytics: 0-19 低 | 20-59 中 | 60-89 高 | 90+ 极高${C_RESET}"
+    echo -e "${C_GRAY}  - IP2Location: 0-32 低 | 33-65 中 | 66+ 高${C_RESET}"
+    echo -e "${C_GRAY}  - AbuseIPDB:   0-24 低 | 25-74 高 | 75+ 建议封禁${C_RESET}"
+    echo -e "${C_GRAY}  - IPQS:        0-74 低 | 75-84 可疑 | 85-89 存在风险 | 90+ 高风险${C_RESET}"
+    echo -e "${C_GRAY}  - ipapi:       <0.85% 低风险 | 0.85%~3.00% 较高风险 | 3.00%+ 高风险${C_RESET}"
+    echo -e "${C_GRAY}  - DB-IP:       0 低 | 50 中 | 100 高${C_RESET}\n"
     read -r -p "按回车键返回主菜单..."
 }
 
@@ -1690,11 +1812,13 @@ render_single_archive_card() {
         ) | .[]
     ' "$f" 2>/dev/null)
     while IFS=$'\t' read -r sdb sc; do
-        sc=$(normalize_score "$sc")
-        if [[ "$sc" =~ ^[0-9]+$ ]]; then
+        [[ -z "$sc" || "$sc" == "null" ]] && continue
+        local chk
+        chk=$(normalize_score "$sc")
+        if [[ "$chk" =~ ^[0-9]+$ ]]; then
             printf "    • %-13s ▏ " "$sdb"
-            render_bar "$sc"
-            (( score_count++ ))
+            render_bar "$sc" "$sdb"
+            (( ++score_count ))
         fi
     done <<< "$score_data"
     if (( score_count == 0 )); then

@@ -1598,7 +1598,7 @@ show_mail_and_blacklist() {
 setup_cron() {
     clear
     load_config
-    print_module_header "⚙️  设置后台定时自动检测与存档"
+    print_module_header "🔧 设置后台定时自动检测与存档"
 
     local local_h
     local_h=$(get_beijing_4am_local_hour)
@@ -2029,7 +2029,7 @@ render_archive_snapshot() {
 show_alerts_history() {
     if [[ ! -f "$ALERT_LOG" || ! -s "$ALERT_LOG" ]]; then
         clear
-        print_module_header "⚠️  风险变化提醒历史一览"
+        print_module_header "🔔 风险变化提醒历史一览"
         echo -e "  ${C_GREEN}• 暂无任何风险变化提醒记录，IP 质量状态保持稳定${C_RESET}\n"
         read -r -p "按回车键返回主菜单..."
         return
@@ -2042,7 +2042,7 @@ show_alerts_history() {
     local total_count=${#all_alerts[@]}
     if (( total_count == 0 )); then
         clear
-        print_module_header "⚠️  风险变化提醒历史一览"
+        print_module_header "🔔 风险变化提醒历史一览"
         echo -e "  ${C_GREEN}• 暂无任何风险变化提醒记录，IP 质量状态保持稳定${C_RESET}\n"
         read -r -p "按回车键返回主菜单..."
         return
@@ -2055,7 +2055,7 @@ show_alerts_history() {
 
     while true; do
         clear
-        print_module_header "⚠️  风险变化提醒历史一览"
+        print_module_header "🔔 风险变化提醒历史一览"
 
         local start_idx=$((page * page_size))
         local end_idx=$((start_idx + page_size))
@@ -2219,7 +2219,7 @@ view_archives() {
 # ==============================================================================
 cleanup_data() {
     clear
-    print_module_header "🗑️  清理与维护历史数据"
+    print_module_header "🧹 清理与维护历史数据"
 
     local v4_cnt v6_cnt v4_size v6_size
     v4_cnt=$(count_json_files "$V4_DIR")
@@ -2493,7 +2493,7 @@ render_panel() {
     echo -e "  ${C_CYAN}📅 时间跨度:${C_RESET} ${time_span}"
     echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored} ${C_GRAY}(每天静默自动更新脚本与核心)${C_RESET}"
     echo ""
-    echo -e "${C_GRAY}── ${C_YELLOW}⚠️  最近风险变化提醒${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
+    echo -e "${C_GRAY}── ${C_CYAN}🔔 最近风险变化提醒${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
 
     # 读取最近 3 条告警
     local alerts=()
@@ -2518,11 +2518,11 @@ render_panel() {
     echo ""
     echo -e "${C_GRAY}── ${C_CYAN}📋 功能菜单导航${C_RESET} ${C_GRAY}───────────────────────────────────────────────────${C_RESET}"
     echo -e "  ${C_BOLD}[1]${C_RESET} 📊 IP 类型属性变动        ${C_BOLD}[7]${C_RESET}  📋 历史存档图表快照"
-    echo -e "  ${C_BOLD}[2]${C_RESET} 📈 综合风险评分图         ${C_BOLD}[8]${C_RESET}  ⚙️ 配置定时任务"
+    echo -e "  ${C_BOLD}[2]${C_RESET} 📈 综合风险评分图         ${C_BOLD}[8]${C_RESET}  🔧 配置定时任务"
     echo -e "  ${C_BOLD}[3]${C_RESET} 🔬 风险因子综合矩阵       ${C_BOLD}[9]${C_RESET}  🔄 立即执行检测"
-    echo -e "  ${C_BOLD}[4]${C_RESET} 🎬 流媒体与AI解锁         ${C_BOLD}[10]${C_RESET} 🗑️ 清理历史数据"
+    echo -e "  ${C_BOLD}[4]${C_RESET} 🎬 流媒体与AI解锁         ${C_BOLD}[10]${C_RESET} 🧹 清理历史数据"
     echo -e "  ${C_BOLD}[5]${C_RESET} 📬 邮件与黑名单监测       ${C_BOLD}[0]${C_RESET}  🚪 退出系统"
-    echo -e "  ${C_BOLD}[6]${C_RESET} ⚠️ 风险变化提醒历史       ${C_BOLD}[x]${C_RESET}  🧹 卸载系统"
+    echo -e "  ${C_BOLD}[6]${C_RESET} 🔔 风险变化提醒历史       ${C_BOLD}[x]${C_RESET}  ❌ 卸载系统"
     echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}"
 }
 

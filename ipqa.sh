@@ -2017,6 +2017,107 @@ render_archive_snapshot() {
     fi
 }
 
+# ==============================================================================
+# 模块 6: 风险变化提醒历史 (show_alerts_history)
+# ==============================================================================
+show_alerts_history() {
+    if [[ ! -f "$ALERT_LOG" || ! -s "$ALERT_LOG" ]]; then
+        clear
+        print_module_header "⚠️  风险变化提醒历史一览"
+        echo -e "  ${C_GREEN}• 暂无任何风险变化提醒记录，IP 质量状态保持稳定${C_RESET}\n"
+        read -r -p "按回车键返回主菜单..."
+        return
+    fi
+
+    # 倒序读取全部告警记录 (最新变动在最前)
+    local all_alerts=()
+    mapfile -t all_alerts < <(sort -t'|' -k1 -r "$ALERT_LOG" 2>/dev/null)
+
+    local total_count=${#all_alerts[@]}
+    if (( total_count == 0 )); then
+        clear
+        print_module_header "⚠️  风险变化提醒历史一览"
+        echo -e "  ${C_GREEN}• 暂无任何风险变化提醒记录，IP 质量状态保持稳定${C_RESET}\n"
+        read -r -p "按回车键返回主菜单..."
+        return
+    fi
+
+    local page=0
+    local page_size=15
+    local total_pages=$(( (total_count + page_size - 1) / page_size ))
+    (( total_pages == 0 )) && total_pages=1
+
+    while true; do
+        clear
+        print_module_header "⚠️  风险变化提醒历史一览"
+
+        local start_idx=$((page * page_size))
+        local end_idx=$((start_idx + page_size))
+        (( end_idx > total_count )) && end_idx=$total_count
+
+        echo -e "最近风险变动事件记录 (共 ${total_count} 条，第 $((page + 1))/${total_pages} 页):\n"
+
+        for ((i=start_idx; i<end_idx; i++)); do
+            local alt="${all_alerts[$i]}"
+            [[ -z "$alt" ]] && continue
+            # 格式: 2026-09-11 12:00:00|WARNING|YouTube Region 发生变化|IPv4
+            local a_time a_level a_msg a_ver
+            IFS='|' read -r a_time a_level a_msg a_ver <<< "$alt"
+
+            local badge=""
+            case "$a_level" in
+                CRITICAL) badge="${C_RED}${C_BOLD}[严重]${C_RESET}" ;;
+                WARNING)  badge="${C_YELLOW}[警告]${C_RESET}" ;;
+                INFO)     badge="${C_CYAN}[提示]${C_RESET}" ;;
+                *)        badge="${C_GRAY}[记录]${C_RESET}" ;;
+            esac
+
+            local ver_badge=""
+            if [[ "$a_ver" == "IPv6" ]]; then
+                ver_badge="${C_CYAN}IPv6${C_RESET}"
+            else
+                ver_badge="${C_GREEN}IPv4${C_RESET}"
+            fi
+
+            local idx
+            printf -v idx "%2d" "$((i + 1))"
+            echo -e "  ${C_BOLD}[$idx]${C_RESET} ${a_time} │ ${ver_badge} │ ${badge} │ ${a_msg}"
+        done
+
+        echo ""
+        local nav_hint=""
+        (( page + 1 < total_pages )) && nav_hint+="[n] 下一页 | "
+        (( page > 0 )) && nav_hint+="[p] 上一页 | "
+        echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}"
+        echo -ne "${C_CYAN}操作: ${nav_hint}[c] 清空日志 | [0/回车] 返回主菜单: ${C_RESET}"
+        read -r opt_act
+
+        if [[ "$opt_act" == "0" || -z "$opt_act" ]]; then
+            break
+        elif [[ "$opt_act" == "n" || "$opt_act" == "N" ]]; then
+            if (( page + 1 < total_pages )); then
+                page=$((page + 1))
+            fi
+        elif [[ "$opt_act" == "p" || "$opt_act" == "P" ]]; then
+            if (( page > 0 )); then
+                page=$((page - 1))
+            fi
+        elif [[ "$opt_act" == "c" || "$opt_act" == "C" ]]; then
+            echo ""
+            read -r -p "确认清空全部风险变动日志吗？(y/N): " confirm_clear
+            if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then
+                > "$ALERT_LOG"
+                echo -e "${C_GREEN}✔ 告警日志已成功清空！${C_RESET}"
+                sleep 0.8
+                break
+            fi
+        fi
+    done
+}
+
+# ==============================================================================
+# 模块 7: 查看历史存档快照 (view_archives - 图形图表化美化版，双栈合并展示)
+# ==============================================================================
 view_archives() {
     # 收集全部不重复的时间戳 (双栈一体，无需区分选择)
     local all_ts=()
@@ -2030,7 +2131,7 @@ view_archives() {
     if [[ ${#all_ts[@]} -eq 0 ]]; then
         clear
         print_module_header "📋 历史存档图表快照查看"
-        echo -e "${C_YELLOW}暂无任何历史存档数据，请先执行一次检测 (选项 8)${C_RESET}\n"
+        echo -e "${C_YELLOW}暂无任何历史存档数据，请先执行一次检测 (选项 9)${C_RESET}\n"
         read -r -p "按回车键返回..."
         return
     fi
@@ -2410,11 +2511,12 @@ render_panel() {
     fi
     echo ""
     echo -e "${C_GRAY}── ${C_CYAN}📋 功能菜单导航${C_RESET} ${C_GRAY}───────────────────────────────────────────────────${C_RESET}"
-    echo -e "  ${C_BOLD}[1]${C_RESET} 📊 IP 类型属性变动       ${C_BOLD}[6]${C_RESET} 📋 历史存档图表快照"
-    echo -e "  ${C_BOLD}[2]${C_RESET} 📈 综合风险评分图        ${C_BOLD}[7]${C_RESET} ⚙️  配置定时任务"
-    echo -e "  ${C_BOLD}[3]${C_RESET} 🔬 风险因子综合矩阵      ${C_BOLD}[8]${C_RESET} 🔄 立即执行检测"
-    echo -e "  ${C_BOLD}[4]${C_RESET} 🎬 流媒体与AI解锁        ${C_BOLD}[9]${C_RESET} 🗑️  清理历史数据"
-    echo -e "  ${C_BOLD}[5]${C_RESET} 📬 邮件与黑名单监测      ${C_BOLD}[0]${C_RESET} 🚪 退出系统  ${C_BOLD}[x]${C_RESET} 🧹 卸载系统"
+    echo -e "  ${C_BOLD}[1]${C_RESET} 📊 IP 类型属性变动        ${C_BOLD}[7]${C_RESET}  📋 历史存档图表快照"
+    echo -e "  ${C_BOLD}[2]${C_RESET} 📈 综合风险评分图         ${C_BOLD}[8]${C_RESET}  ⚙️ 配置定时任务"
+    echo -e "  ${C_BOLD}[3]${C_RESET} 🔬 风险因子综合矩阵       ${C_BOLD}[9]${C_RESET}  🔄 立即执行检测"
+    echo -e "  ${C_BOLD}[4]${C_RESET} 🎬 流媒体与AI解锁         ${C_BOLD}[10]${C_RESET} 🗑️ 清理历史数据"
+    echo -e "  ${C_BOLD}[5]${C_RESET} 📬 邮件与黑名单监测       ${C_BOLD}[0]${C_RESET}  🚪 退出系统"
+    echo -e "  ${C_BOLD}[6]${C_RESET} ⚠️ 风险变化提醒历史       ${C_BOLD}[x]${C_RESET}  🧹 卸载系统"
     echo -e "${C_GRAY}──────────────────────────────────────────────────────────────────────${C_RESET}"
 }
 
@@ -2434,14 +2536,15 @@ main_loop() {
             3) show_risk_factor ;;
             4) show_media_unlock ;;
             5) show_mail_and_blacklist ;;
-            6) view_archives ;;
-            7) setup_cron ;;
-            8)
+            6) show_alerts_history ;;
+            7) view_archives ;;
+            8) setup_cron ;;
+            9)
                 clear
                 run_check false
                 read -r -p "检测完毕，按回车键返回主菜单..."
                 ;;
-            9) cleanup_data ;;
+            10) cleanup_data ;;
             x|X) uninstall_ipqa ;;
             0|q|Q)
                 echo -e "\n感谢使用 IPQA，再见！"

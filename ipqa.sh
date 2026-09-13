@@ -235,7 +235,7 @@ ensure_ip_script() {
     return 0
 }
 
-# 每 7 天自动静默更新 IPQA 脚本及 IPQuality 检测核心 (静默执行)
+# 每天自动静默更新 IPQA 脚本及 IPQuality 检测核心 (静默执行)
 auto_update_if_needed() {
     local quiet="${1:-true}"
     local stamp_file="$IPQA_HOME/.last_auto_update"
@@ -248,10 +248,10 @@ auto_update_if_needed() {
     local last_update=0
     [[ -f "$stamp_file" ]] && last_update=$(cat "$stamp_file" 2>/dev/null || echo 0)
 
-    # 上次更新距离现在超过 7 天 (7 * 86400 = 604800 秒) 或核心文件不存在时自动静默更新
-    if [[ ! -f "$IP_SCRIPT" ]] || (( now_sec - last_update >= 604800 )); then
-        [[ "$quiet" == "false" ]] && echo -e "${C_CYAN}🔄 距上次更新已超 7 天，正在静默更新脚本与检测核心...${C_RESET}"
-        log_msg "INFO" "触发 7 天周期自动静默更新脚本与检测核心"
+    # 上次更新距离现在超过 1 天 (86400 秒) 或核心文件不存在时自动静默更新
+    if [[ ! -f "$IP_SCRIPT" ]] || (( now_sec - last_update >= 86400 )); then
+        [[ "$quiet" == "false" ]] && echo -e "${C_CYAN}🔄 距上次更新已超 1 天，正在静默更新脚本与检测核心...${C_RESET}"
+        log_msg "INFO" "触发 1 天周期自动静默更新脚本与检测核心"
 
         # 1. 自动同步 IPQuality 检测核心 (ip.sh)
         local tmp_ip="$IPQA_HOME/ip.sh.tmp"
@@ -262,10 +262,10 @@ auto_update_if_needed() {
             patch_ip_script
             local new_ver
             new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
-            log_msg "INFO" "7天自动更新检测核心成功，版本: ${new_ver:-未知}"
+            log_msg "INFO" "1天自动更新检测核心成功，版本: ${new_ver:-未知}"
         else
             rm -f "$tmp_ip"
-            log_msg "WARN" "7天自动更新检测核心网络超时，继续使用本地核心"
+            log_msg "WARN" "1天自动更新检测核心网络超时，继续使用本地核心"
         fi
 
         # 2. 自动同步 IPQA 脚本 (ipqa.sh)
@@ -275,7 +275,7 @@ auto_update_if_needed() {
                 mv "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"
                 sed -i 's/\r$//' "$IPQA_HOME/ipqa.sh" 2>/dev/null || true
                 chmod +x "$IPQA_HOME/ipqa.sh"
-                log_msg "INFO" "7天自动静默更新 IPQA 脚本成功"
+                log_msg "INFO" "1天自动静默更新 IPQA 脚本成功"
             else
                 rm -f "$tmp_ipqa"
                 log_msg "WARN" "自动更新 IPQA 脚本语法校验失败，保留当前脚本"
@@ -2260,7 +2260,7 @@ render_panel() {
     echo -e "  ${C_CYAN}⏰ 上次检测:${C_RESET} ${last_check}"
     echo -e "  ${C_CYAN}📦 历史存档:${C_RESET} IPv4: ${C_GREEN}${count_v4}${C_RESET} 份  ${C_GRAY}│${C_RESET}  IPv6: ${C_GREEN}${count_v6}${C_RESET} 份"
     echo -e "  ${C_CYAN}📅 时间跨度:${C_RESET} ${time_span}"
-    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored} ${C_GRAY}(每 7 天静默自动更新脚本与核心)${C_RESET}"
+    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored} ${C_GRAY}(每天静默自动更新脚本与核心)${C_RESET}"
     echo ""
     echo -e "${C_GRAY}── ${C_YELLOW}⚠️  最近风险变化提醒${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
 
@@ -2297,7 +2297,7 @@ render_panel() {
 main_loop() {
     check_dependencies
     load_config
-    # 每 7 天自动静默更新脚本与检测核心 (后台运行，不阻塞界面交互)
+    # 每天自动静默更新脚本与检测核心 (后台运行，不阻塞界面交互)
     ( auto_update_if_needed true >/dev/null 2>&1 & )
 
     while true; do

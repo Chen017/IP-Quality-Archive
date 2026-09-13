@@ -131,8 +131,14 @@ fmt_type_badge() {
         printf "%-${col_width}s" ""
         return
     fi
+    case "$val" in
+        "Data Center/Web Hosting/Transit"|"Web Hosting") val="Hosting" ;;
+        "Fixed Line ISP") val="Line ISP" ;;
+        "Content Delivery Network") val="CDN" ;;
+        "University/College/School") val="Education" ;;
+    esac
     local bg="$BG_YELLOW"
-    if [[ "$val" =~ (机房|Hosting|Data Center|CDN|Transit) ]]; then
+    if [[ "$val" =~ (机房|Hosting|Data Center|CDN|Transit|Datacenter) ]]; then
         bg="$BG_RED"
     elif [[ "$val" =~ (家宽|ISP|原生|Mobile|手机) ]]; then
         bg="$BG_GREEN"

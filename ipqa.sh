@@ -262,29 +262,39 @@ auto_update_if_needed() {
         # 1. 自动同步 IPQuality 检测核心 (ip.sh)
         local tmp_ip="$IPQA_HOME/ip.sh.tmp"
         if curl -sL https://IP.Check.Place -o "$tmp_ip" 2>/dev/null || curl -sL https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_ip" 2>/dev/null; then
-            mv "$tmp_ip" "$IP_SCRIPT"
-            sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
-            chmod +x "$IP_SCRIPT"
-            patch_ip_script
-            local new_ver
-            new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
-            log_msg "INFO" "1天自动更新检测核心成功，版本: ${new_ver:-未知}"
+            sed -i 's/\r$//' "$tmp_ip" 2>/dev/null || true
+            if [[ -f "$IP_SCRIPT" ]] && cmp -s "$tmp_ip" "$IP_SCRIPT"; then
+                rm -f "$tmp_ip"
+                log_msg "INFO" "IPQuality 检测核心已是最新版本，无需重复更新"
+            else
+                mv "$tmp_ip" "$IP_SCRIPT"
+                chmod +x "$IP_SCRIPT"
+                patch_ip_script
+                local new_ver
+                new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
+                log_msg "INFO" "检测到新版本，自动更新检测核心成功，版本: ${new_ver:-未知}"
+            fi
         else
             rm -f "$tmp_ip"
-            log_msg "WARN" "1天自动更新检测核心网络超时，继续使用本地核心"
+            log_msg "WARN" "自动更新检测核心网络超时，继续使用本地核心"
         fi
 
         # 2. 自动同步 IPQA 脚本 (ipqa.sh)
         local tmp_ipqa="$IPQA_HOME/ipqa.sh.tmp"
         if curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh -o "$tmp_ipqa" 2>/dev/null; then
-            if bash -n "$tmp_ipqa" 2>/dev/null; then
-                mv "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"
-                sed -i 's/\r$//' "$IPQA_HOME/ipqa.sh" 2>/dev/null || true
-                chmod +x "$IPQA_HOME/ipqa.sh"
-                log_msg "INFO" "1天自动静默更新 IPQA 脚本成功"
-            else
+            sed -i 's/\r$//' "$tmp_ipqa" 2>/dev/null || true
+            if [[ -f "$IPQA_HOME/ipqa.sh" ]] && cmp -s "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"; then
                 rm -f "$tmp_ipqa"
-                log_msg "WARN" "自动更新 IPQA 脚本语法校验失败，保留当前脚本"
+                log_msg "INFO" "IPQA 脚本已是最新版本，无需重复更新"
+            else
+                if bash -n "$tmp_ipqa" 2>/dev/null; then
+                    mv "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"
+                    chmod +x "$IPQA_HOME/ipqa.sh"
+                    log_msg "INFO" "检测到新版本，自动静默更新 IPQA 脚本成功"
+                else
+                    rm -f "$tmp_ipqa"
+                    log_msg "WARN" "自动更新 IPQA 脚本语法校验失败，保留当前脚本"
+                fi
             fi
         else
             rm -f "$tmp_ipqa"
@@ -292,7 +302,7 @@ auto_update_if_needed() {
         fi
 
         echo "$now_sec" > "$stamp_file"
-        [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPQA 脚本与检测核心已完成自动静默更新${C_RESET}\n"
+        [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPQA 脚本与检测核心检查完成${C_RESET}\n"
     fi
 }
 

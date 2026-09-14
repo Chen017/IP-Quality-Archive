@@ -412,6 +412,127 @@ get_recent_alerts() {
     fi
 }
 
+# 按天聚合最近风险变化提醒 (展示最近 target_days 天的每日变化统计与智能摘要)
+render_daily_alerts_summary() {
+    local target_days="${1:-3}"
+
+    # 获取最近检测/有记录的日期列表 (最多 target_days 天，格式 YYYY-MM-DD，倒序)
+    local active_dates=()
+    mapfile -t active_dates < <(
+        {
+            if [[ -d "$V4_DIR" ]]; then
+                for f in "$V4_DIR"/*.json; do
+                    [[ -f "$f" ]] && basename "$f" | cut -d'_' -f1
+                done
+            fi
+            if [[ -d "$V6_DIR" ]]; then
+                for f in "$V6_DIR"/*.json; do
+                    [[ -f "$f" ]] && basename "$f" | cut -d'_' -f1
+                done
+            fi
+            if [[ -f "$ALERT_LOG" ]]; then
+                cut -d' ' -f1 "$ALERT_LOG" 2>/dev/null
+            fi
+        } | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort -u -r | head -n "$target_days"
+    )
+
+    if [[ ${#active_dates[@]} -eq 0 ]]; then
+        echo -e "  ${C_GREEN}• 暂无历史数据，IP 质量状态保持稳定${C_RESET}"
+        return
+    fi
+
+    for d in "${active_dates[@]}"; do
+        local short_date="${d:5}"
+
+        local day_alerts=()
+        if [[ -f "$ALERT_LOG" ]]; then
+            mapfile -t day_alerts < <(grep "^$d " "$ALERT_LOG" 2>/dev/null | grep -v "首次完成数据存档监测" || true)
+        fi
+        local count=${#day_alerts[@]}
+
+        if (( count == 0 )); then
+            if [[ -f "$ALERT_LOG" ]] && grep -q "^$d .*首次完成数据存档监测" "$ALERT_LOG" 2>/dev/null; then
+                echo -e "  ${C_GREEN}• [${short_date}] 首次完成建档监测: 各权威数据库及流媒体状态稳定良好${C_RESET}"
+            else
+                echo -e "  ${C_GREEN}• [${short_date}] 运行平稳 (0 风险变动): 各权威数据库及流媒体状态稳定良好${C_RESET}"
+            fi
+        else
+            local crit_cnt=0 warn_cnt=0 info_cnt=0
+            local top_crit_msg="" top_warn_msg="" top_info_msg=""
+
+            for alt in "${day_alerts[@]}"; do
+                local a_time a_level a_msg a_ver
+                IFS='|' read -r a_time a_level a_msg a_ver <<< "$alt"
+                case "$a_level" in
+                    CRITICAL)
+                        (( ++crit_cnt ))
+                        top_crit_msg="$a_msg"
+                        ;;
+                    WARNING)
+                        (( ++warn_cnt ))
+                        top_warn_msg="$a_msg"
+                        ;;
+                    *)
+                        (( ++info_cnt ))
+                        top_info_msg="$a_msg"
+                        ;;
+                esac
+            done
+
+            local line_color="${C_CYAN}"
+            local level_label="提示变动"
+            local breakdown=""
+            local rep_msg=""
+
+            if (( crit_cnt > 0 )); then
+                line_color="${C_RED}"
+                level_label="异常变动"
+                rep_msg="$top_crit_msg"
+                if (( warn_cnt > 0 )); then
+                    breakdown="${crit_cnt} 严重 ${warn_cnt} 警告"
+                else
+                    breakdown="${crit_cnt} 严重"
+                fi
+            elif (( warn_cnt > 0 )); then
+                line_color="${C_YELLOW}"
+                level_label="风险变动"
+                rep_msg="$top_warn_msg"
+                if (( info_cnt > 0 )); then
+                    breakdown="${warn_cnt} 警告 ${info_cnt} 提示"
+                else
+                    breakdown="${warn_cnt} 警告"
+                fi
+            else
+                line_color="${C_CYAN}"
+                level_label="提示变动"
+                rep_msg="$top_info_msg"
+                breakdown="${info_cnt} 提示"
+            fi
+
+            # 清理冗余标记并提取核心变动语句
+            rep_msg=$(echo "$rep_msg" | sed -r -e 's/\s*\(评分:[^)]*\)//g' -e 's/\s*\(原:[^)]*\)//g')
+            rep_msg="${rep_msg%%: \[*}"
+            rep_msg=$(echo "$rep_msg" | sed -e 's/[[:space:]]*$//')
+
+            local full_desc="$rep_msg"
+            if (( count > 1 )); then
+                if (( crit_cnt > 0 )); then
+                    full_desc="${rep_msg} 等，需关注"
+                else
+                    full_desc="${rep_msg} 等，请留意"
+                fi
+            fi
+
+            # 宽度保护：截断超长字符串，确保终端不折行
+            if [[ ${#full_desc} -gt 28 ]]; then
+                full_desc="${full_desc:0:26}..."
+            fi
+
+            echo -e "  ${line_color}• [${short_date}] 检出 ${count} 项${level_label} (${breakdown}): ${full_desc}${C_RESET}"
+        fi
+    done
+}
+
 compare_and_alert() {
     local dir="$1"
     local new_file="$2"
@@ -2570,26 +2691,8 @@ render_panel() {
     echo ""
     echo -e "${C_GRAY}── ${C_CYAN}🔔 最近风险变化提醒${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
 
-    # 读取最近 3 条告警
-    local alerts=()
-    mapfile -t alerts < <(get_recent_alerts 3)
-    if [[ ${#alerts[@]} -eq 0 ]]; then
-        echo -e "  ${C_GREEN}• 暂无异常风险波动，IP 质量状态保持稳定${C_RESET}"
-    else
-        for alt in "${alerts[@]}"; do
-            # 格式: 2026-09-11 12:00:00|WARNING|YouTube Region 发生变化|IPv4
-            IFS='|' read -r a_time a_level a_msg a_ver <<< "$alt"
-            local a_short_time
-            a_short_time=$(echo "$a_time" | cut -d ' ' -f 1 | cut -d '-' -f 2,3)
-            if [[ "$a_level" == "CRITICAL" ]]; then
-                echo -e "  ${C_RED}• [${a_short_time}] ${a_msg}${C_RESET}"
-            elif [[ "$a_level" == "WARNING" ]]; then
-                echo -e "  ${C_YELLOW}• [${a_short_time}] ${a_msg}${C_RESET}"
-            else
-                echo -e "  ${C_CYAN}• [${a_short_time}] ${a_msg}${C_RESET}"
-            fi
-        done
-    fi
+    # 按天聚合展示最近 3 天的风险变化统计与智能摘要
+    render_daily_alerts_summary 3
     echo ""
     echo -e "${C_GRAY}── ${C_CYAN}📋 功能菜单导航${C_RESET} ${C_GRAY}───────────────────────────────────────────────────${C_RESET}"
     echo -e "  ${C_BOLD}[1]${C_RESET} 📊 IP 类型属性变动        ${C_BOLD}[7]${C_RESET}  📋 历史存档图表快照"

@@ -13,10 +13,10 @@ bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/mai
 ## 功能特性
 
 - **双栈归档**：IPv4 / IPv6 分别定时检测与归档（JSON 存储）。
-- **历史走势**：终端查看 IP 类型判定、风控评分（Scamalytics / AbuseIPDB 等）、欺诈标记、流媒体解锁（Netflix / YouTube 等）的历史演变。
+- **历史走势**：终端查看 IP 类型判定、风控评分（Scamalytics / AbuseIPDB 等）、欺诈标记、主流流媒体与 AI 解锁（Netflix / YouTube / Amazon Prime Video 等）的历史演变。
 - **变动感知采样**：查看长期历史时，自动优先保留发生过属性变动的节点，避免固定抽样错过变动。
-- **变动告警**：风控分上升、流媒体掉解锁/地区漂移、被列入黑名单时记录至 `alerts.log`。
-- **定时巡检**：自动换算服务器本地时区，定时静默执行检测。
+- **每日聚合提醒**：面板直观展示最近多日的风险变化智能摘要，风控分上升、流媒体掉解锁/地区漂移、被列入黑名单时智能归纳并记录至 `alerts.log`。
+- **定时巡检**：自动换算服务器本地时区，定时静默执行检测并自动同步更新核心。
 
 ## 常用命令
 

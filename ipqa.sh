@@ -213,6 +213,9 @@ patch_ip_script() {
 
     # 4. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
     sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$IP_SCRIPT" 2>/dev/null || true
+
+    # 5. 修复上游 ip.sh 中 db_dbip 因单引号字面量 local tmpcurlarg='$CurlARG' 导致未能正确继承 -4/-6 参数的 bug
+    sed -i "s/local tmpcurlarg='\$CurlARG'/local tmpcurlarg=\"\$CurlARG\"/g" "$IP_SCRIPT" 2>/dev/null || true
 }
 
 ensure_ip_script() {
@@ -1036,6 +1039,12 @@ normalize_score() {
         fi
         return
     fi
+    # 文本风险等级格式 (如 DB-IP 返回的 "低风险" / "low" 等) -> 映射为统一数值 (0 / 50 / 100)
+    case "$raw" in
+        *低*|low|Low) echo 0; return ;;
+        *中*|medium|Medium) echo 50; return ;;
+        *高*|high|High) echo 100; return ;;
+    esac
     # 无法识别的格式，静默丢弃
 }
 
@@ -1106,7 +1115,7 @@ get_risk_badge() {
             sc=$(normalize_score "$raw")
             [[ ! "$sc" =~ ^[0-9]+$ ]] && return
             if (( sc == 0 )); then echo "低风险|$C_GREEN"
-            elif (( sc == 50 )); then echo "中风险|$C_YELLOW"
+            elif (( sc <= 50 )); then echo "中风险|$C_YELLOW"
             else echo "高风险|$C_RED"; fi
             ;;
         *)

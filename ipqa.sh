@@ -509,23 +509,36 @@ render_daily_alerts_summary() {
                 breakdown="${info_cnt} 提示"
             fi
 
-            # 清理冗余标记并提取核心变动语句
-            rep_msg=$(echo "$rep_msg" | sed -r -e 's/\s*\(评分:[^)]*\)//g' -e 's/\s*\(原:[^)]*\)//g')
+            # 清理冗余标记并精简为清晰扼要短语 (例如 "TikTok 地区变动" 而非冗长的 "从[AL]变为[US]")
+            rep_msg=$(echo "$rep_msg" | sed -r \
+                -e 's/\s*\(评分:[^)]*\)//g' \
+                -e 's/\s*\(原:[^)]*\)//g' \
+                -e 's/ 地区从 .* 变为 .*/ 地区变动/g' \
+                -e 's/ 地区变动:.*/ 地区变动/g' \
+                -e 's/ 地区 \[.*\] 不符合预期 .*/ 地区异常/g' \
+                -e 's/ 解锁状态发生降级.*/ 解锁降级/g' \
+                -e 's/ 解锁状态变化.*/ 解锁变动/g' \
+                -e 's/ 风险等级上升至.*/ 风险等级上升/g' \
+                -e 's/ 风险等级上升:.*/ 风险等级上升/g' \
+                -e 's/ 风险等级变动:.*/ 风险等级变动/g' \
+                -e 's/ 风险等级改善恢复:.*/ 风险等级改善/g' \
+                -e 's/ (原生\/广播|使用|公司)?类型发生变化.*/ 类型变动/g')
             rep_msg="${rep_msg%%: \[*}"
+            rep_msg="${rep_msg%%: *}"
             rep_msg=$(echo "$rep_msg" | sed -e 's/[[:space:]]*$//')
 
             local full_desc="$rep_msg"
             if (( count > 1 )); then
                 if (( crit_cnt > 0 )); then
-                    full_desc="${rep_msg} 等，需关注"
+                    full_desc="${rep_msg} 等 (需关注)"
                 else
-                    full_desc="${rep_msg} 等，请留意"
+                    full_desc="${rep_msg} 等"
                 fi
             fi
 
             # 宽度保护：截断超长字符串，确保终端不折行
-            if [[ ${#full_desc} -gt 28 ]]; then
-                full_desc="${full_desc:0:26}..."
+            if [[ ${#full_desc} -gt 38 ]]; then
+                full_desc="${full_desc:0:35}..."
             fi
 
             echo -e "  ${line_color}• [${short_date}] 检出 ${count} 项${level_label} (${breakdown}): ${full_desc}${C_RESET}"
@@ -560,7 +573,7 @@ compare_and_alert() {
         if [[ -n "$old_reg" && -n "$new_reg" && "$old_reg" != "$new_reg" ]]; then
             local svc_disp="$svc"
             [[ "$svc" == "AmazonPrimeVideo" ]] && svc_disp="AmazonPV"
-            add_alert "WARNING" "$svc_disp 地区从 [$old_reg] 变为 [$new_reg]" "$ip_ver"
+            add_alert "WARNING" "$svc_disp 地区变动: [$old_reg] -> [$new_reg]" "$ip_ver"
         fi
     done
 
@@ -1111,9 +1124,9 @@ render_ip_type_table() {
         done
 
         if [[ "$is_stable" == "true" ]]; then
-            printf "│ ${C_GREEN}✅ 保持稳定${C_RESET}\n"
+            printf "│  ${C_GREEN}✅ 保持稳定${C_RESET}\n"
         else
-            printf "│ ${C_YELLOW}⚠️  存在变动${C_RESET}\n"
+            printf "│  ${C_YELLOW}⚠️  存在变动${C_RESET}\n"
         fi
     done
 
@@ -1448,8 +1461,8 @@ render_risk_factor_matrix() {
     local full_engines=("IP2LOCATION" "ipapi" "ipregistry" "IPQS" "SCAMALYTICS" "ipdata" "IPinfo" "IPWHOIS" "DBIP")
     local factors=("Proxy" "Tor" "VPN" "Server" "Abuser" "Robot")
 
-    # 打印表头
-    printf "  %-10s │ " "风险因子"
+    # 打印表头 (固定 10 字符宽度 + 1 空格 + 分隔符)
+    printf "  风险因子   │ "
     for eng in "${engines[@]}"; do
         printf "%-7s " "$eng"
     done
@@ -1495,13 +1508,15 @@ render_risk_factor_history() {
         dates+=("$(fmt_short_date "$(basename "$hf" .json)")")
     done
 
-    printf "  %-9s" "风险因子"
+    # 打印表头 (第一列固定 12 字符宽度: "  风险因子  ")
+    printf "  风险因子  "
     for d in "${dates[@]}"; do
+        # 每列固定 8 字符宽度: "  09-12 "
         printf "│  %-5s " "$d"
     done
-    printf "│ %-12s\n" "历史综合表现"
+    printf "│  %-12s\n" "历史综合表现"
 
-    local divider_len=$(( 11 + ${#dates[@]} * 9 + 15 ))
+    local divider_len=$(( 12 + ${#dates[@]} * 9 + 16 ))
     echo -ne "  "
     draw_divider "$divider_len"
 
@@ -1509,7 +1524,8 @@ render_risk_factor_history() {
     local factors=("Proxy" "Tor" "VPN" "Server" "Abuser" "Robot")
 
     for fac in "${factors[@]}"; do
-        printf "  %-8s " "$fac"
+        # 第一列固定 12 字符宽度对齐
+        printf "  %-8s  " "$fac"
         local had_detection=false
         for hf in "${hist_files[@]}"; do
             local detected_count=0
@@ -1525,14 +1541,15 @@ render_risk_factor_history() {
                 fi
             done
             if (( detected_count > 0 )); then
-                printf "│ ${C_RED}⚠️ %d/%d${C_RESET} " "$detected_count" "$total_tested"
+                # 方案 A: 补齐空格使 ⚠️ 4/6 与 ✔ 安全 保持严格一致的 8 格宽度，完美对齐
+                printf "│ ${C_RED}⚠️ %d/%d${C_RESET}  " "$detected_count" "$total_tested"
                 had_detection=true
             else
                 printf "│ ${C_GREEN}✔ 安全${C_RESET} "
             fi
         done
         if [[ "$had_detection" == "true" ]]; then
-            printf "│  ${C_YELLOW}⚠️ 曾有检出${C_RESET}\n"
+            printf "│  ${C_YELLOW}⚠️  曾有检出${C_RESET}\n"
         else
             printf "│  ${C_GREEN}✅ 保持安全${C_RESET}\n"
         fi
@@ -1584,8 +1601,8 @@ render_media_unlock_table() {
         dates+=("$(fmt_short_date "$(basename "$f" .json)")")
     done
 
-    # 打印时间表头
-    printf "  %-14s │ " "服务名称"
+    # 打印时间表头 (服务名称占 8 字符，补 6 空格对齐 14 字符宽度)
+    printf "  服务名称      │ "
     for d in "${dates[@]}"; do
         printf "%-5s " "$d"
     done
@@ -1739,7 +1756,8 @@ render_mail_and_blacklist() {
         dates+=("$(fmt_short_date "$(basename "$f" .json)")")
     done
 
-    printf "  %-10s │ " "邮局名称"
+    # 打印表头 (邮局名称占 8 字符，补 2 空格对齐 10 字符宽度)
+    printf "  邮局名称   │ "
     for d in "${dates[@]}"; do
         printf "%-6s " "$d"
     done

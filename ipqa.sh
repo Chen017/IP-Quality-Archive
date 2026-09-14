@@ -216,6 +216,11 @@ patch_ip_script() {
 
     # 5. 修复上游 ip.sh 中 db_dbip 因单引号字面量 local tmpcurlarg='$CurlARG' 导致未能正确继承 -4/-6 参数的 bug
     sed -i "s/local tmpcurlarg='\$CurlARG'/local tmpcurlarg=\"\$CurlARG\"/g" "$IP_SCRIPT" 2>/dev/null || true
+
+    # 6. 修复上游 ip.sh 中 Amazon Prime Video 地区提取贪婪匹配导致 JS 乱码与排版坍塌的 bug
+    if grep -q "currentTerritory//'|cut -f3" "$IP_SCRIPT" 2>/dev/null; then
+        sed -i 's@local result=\$(echo \$tmpresult|grep .*currentTerritory.*head -n 1)@local result=$(echo $tmpresult|grep -o -E '\''"currentTerritory":\\s*"[A-Za-z]{2}"'\''|head -n 1|cut -d"\\"" -f4)@g' "$IP_SCRIPT" 2>/dev/null || true
+    fi
 }
 
 ensure_ip_script() {
@@ -363,8 +368,21 @@ fmt_short_time() {
 clean_region_str() {
     local raw="$1"
     [[ -z "$raw" || "$raw" == "null" || "$raw" == "--" ]] && echo "--" && return
+    # 过滤 JS/JSON 异常残渣 (如包含 Minerva / Program / { / } 等)
+    if [[ "$raw" == *"{"* || "$raw" == *"}"* || "$raw" == *"Minerva"* || "$raw" == *"Program"* ]]; then
+        echo "--"
+        return
+    fi
     local cleaned
     cleaned=$(echo "$raw" | sed -r -e 's/\x1b\[?[0-9;]*m?//g' -e 's/\\033\[?[0-9;]*m?//g' -e 's/[0-9]+m//g')
+    if [[ "$cleaned" =~ \[([A-Za-z]{2})\] ]]; then
+        echo "${BASH_REMATCH[1]^^}"
+        return
+    fi
+    if [[ "$cleaned" =~ ^[[:space:]]*([A-Za-z]{2})[[:space:]]*$ ]]; then
+        echo "${BASH_REMATCH[1]^^}"
+        return
+    fi
     if [[ "$cleaned" =~ ([A-Za-z]{2}) ]]; then
         echo "${BASH_REMATCH[1]^^}"
     else
@@ -408,8 +426,8 @@ compare_and_alert() {
         return 0
     fi
 
-    # 1. 对比流媒体地区变化 (YouTube, Netflix, TikTok)
-    local services=("Youtube" "Netflix" "TikTok")
+    # 1. 对比流媒体地区变化 (YouTube, Netflix, TikTok, AmazonPrimeVideo)
+    local services=("Youtube" "Netflix" "TikTok" "AmazonPrimeVideo")
     for svc in "${services[@]}"; do
         local old_reg new_reg
         old_reg=$(jq -r ".Media.$svc.Region // empty" "$prev_file")
@@ -419,7 +437,9 @@ compare_and_alert() {
         [[ "$old_reg" == "--" ]] && old_reg=""
         [[ "$new_reg" == "--" ]] && new_reg=""
         if [[ -n "$old_reg" && -n "$new_reg" && "$old_reg" != "$new_reg" ]]; then
-            add_alert "WARNING" "$svc 地区从 [$old_reg] 变为 [$new_reg]" "$ip_ver"
+            local svc_disp="$svc"
+            [[ "$svc" == "AmazonPrimeVideo" ]] && svc_disp="AmazonPV"
+            add_alert "WARNING" "$svc_disp 地区从 [$old_reg] 变为 [$new_reg]" "$ip_ver"
         fi
     done
 
@@ -450,10 +470,13 @@ compare_and_alert() {
         old_status=$(jq -r ".Media.$svc.Status // empty" "$prev_file")
         new_status=$(jq -r ".Media.$svc.Status // empty" "$new_file")
         if [[ -n "$old_status" && -n "$new_status" && "$old_status" != "$new_status" ]]; then
+            local svc_disp="$svc"
+            [[ "$svc" == "AmazonPrimeVideo" ]] && svc_disp="AmazonPV"
+            [[ "$svc" == "DisneyPlus" ]] && svc_disp="Disney+"
             if [[ "$new_status" =~ (失败|屏蔽|No|Failed) || ("$old_status" =~ (解锁|Yes) && "$new_status" =~ 仅自制) ]]; then
-                add_alert "CRITICAL" "$svc 解锁状态发生降级: [$old_status] 变为 [$new_status]" "$ip_ver"
+                add_alert "CRITICAL" "$svc_disp 解锁状态发生降级: [$old_status] 变为 [$new_status]" "$ip_ver"
             else
-                add_alert "INFO" "$svc 解锁状态变化: [$old_status] 变为 [$new_status]" "$ip_ver"
+                add_alert "INFO" "$svc_disp 解锁状态变化: [$old_status] 变为 [$new_status]" "$ip_ver"
             fi
         fi
     done
@@ -1451,7 +1474,7 @@ render_media_unlock_table() {
     draw_divider "$div_len"
 
     local services=("TikTok" "DisneyPlus" "Netflix" "Youtube" "AmazonPrimeVideo" "Reddit" "ChatGPT")
-    local display_names=("TikTok" "Disney+" "Netflix" "YouTube" "Amazon PV" "Reddit" "ChatGPT")
+    local display_names=("TikTok" "Disney+" "Netflix" "YouTube" "AmazonPV" "Reddit" "ChatGPT")
 
     local unlock_counts=()
     for ((s=0; s<${#services[@]}; s++)); do
@@ -1916,6 +1939,7 @@ render_single_archive_card() {
             ("Netflix\tNetflix\t" + ($m.Netflix.Status // "未知") + "\t" + ($m.Netflix.Region // "") + "\t" + ($m.Netflix.Type // "")),
             ("DisneyPlus\tDisney+\t" + ($m.DisneyPlus.Status // "未知") + "\t" + ($m.DisneyPlus.Region // "") + "\t" + ($m.DisneyPlus.Type // "")),
             ("TikTok\tTikTok\t" + ($m.TikTok.Status // "未知") + "\t" + ($m.TikTok.Region // "") + "\t" + ($m.TikTok.Type // "")),
+            ("AmazonPrimeVideo\tAmazonPV\t" + ($m.AmazonPrimeVideo.Status // $m.AmazonPV.Status // "未知") + "\t" + ($m.AmazonPrimeVideo.Region // $m.AmazonPV.Region // "") + "\t" + ($m.AmazonPrimeVideo.Type // $m.AmazonPV.Type // "")),
             ("ChatGPT\tChatGPT\t" + ($m.ChatGPT.Status // "未知") + "\t" + ($m.ChatGPT.Region // "") + "\t" + ($m.ChatGPT.Type // "")),
             ("Reddit\tReddit\t" + ($m.Reddit.Status // "未知") + "\t" + ($m.Reddit.Region // "") + "\t" + ($m.Reddit.Type // ""))
         ] | .[]

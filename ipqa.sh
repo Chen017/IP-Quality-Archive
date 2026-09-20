@@ -2600,6 +2600,123 @@ update_ipqa() {
 }
 
 # ==============================================================================
+# 状态概况输出 (CLI)
+# ==============================================================================
+show_status() {
+    load_config
+
+    local latest_v4 latest_v6
+    latest_v4=$(get_latest_archive "$V4_DIR")
+    latest_v6=$(get_latest_archive "$V6_DIR")
+
+    local ip_v4="未检测"
+    local ip_v6="无"
+    local asn="--"
+    local org="--"
+    local loc="--"
+    local last_check="从无检测记录"
+
+    local ref_archive="${latest_v4:-$latest_v6}"
+    if [[ -n "$ref_archive" ]]; then
+        IFS=$'\t' read -r ref_ip asn org city country < <(
+            jq -r '[
+                (.Head.IP // "未知"),
+                (.Info.ASN // "--"),
+                (.Info.Organization // "--"),
+                (.Info.City.Name // ""),
+                (.Info.Region.Name // "")
+            ] | @tsv' "$ref_archive" 2>/dev/null
+        )
+        [[ "$city" == "null" ]] && city=""
+        [[ "$country" == "null" ]] && country=""
+        if [[ -n "$city" && -n "$country" ]]; then
+            loc="$city, $country"
+        elif [[ -n "$country" ]]; then
+            loc="$country"
+        elif [[ -n "$city" ]]; then
+            loc="$city"
+        else
+            loc="未知"
+        fi
+    fi
+
+    if [[ -n "$latest_v4" ]]; then
+        ip_v4=$(jq -r '.Head.IP // "未知"' "$latest_v4" 2>/dev/null)
+    fi
+    if [[ -n "$latest_v6" ]]; then
+        ip_v6=$(jq -r '.Head.IP // "无"' "$latest_v6" 2>/dev/null)
+    fi
+
+    # 统计数量与时间跨度
+    local count_v4 count_v6
+    count_v4=$(count_json_files "$V4_DIR")
+    count_v6=$(count_json_files "$V6_DIR")
+
+    local oldest_file latest_file time_span="--"
+    oldest_file=$(find "$V4_DIR" "$V6_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort | head -n 1)
+    latest_file=$(find "$V4_DIR" "$V6_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort -r | head -n 1)
+    if [[ -n "$oldest_file" && -n "$latest_file" ]]; then
+        local d1 d2
+        d1=$(fmt_short_date "$(basename "$oldest_file" .json)")
+        d2=$(fmt_short_date "$(basename "$latest_file" .json)")
+        time_span="$d1 ~ $d2"
+        last_check=$(fmt_timestamp "$(basename "$latest_file" .json)")
+    fi
+
+    # 定时检测状态 (提取执行周期并显示友好名称)
+    local cron_status="未开启"
+    local cron_colored="${C_GRAY}未开启${C_RESET}"
+    local cron_line
+    cron_line=$(crontab -l 2>/dev/null | grep -E "ipqa(\.sh)? --cron" | head -n 1 || true)
+    if [[ -n "$cron_line" ]]; then
+        local schedule
+        schedule=$(echo "$cron_line" | awk '{print $1,$2,$3,$4,$5}')
+        local local_h
+        local_h=$(get_beijing_4am_local_hour)
+        if [[ "$schedule" == "0 $local_h * * *" ]]; then
+            cron_status="每天 (北京 04:00)"
+        elif [[ "$schedule" == "0 $local_h */3 * *" ]]; then
+            cron_status="每 3 天 (北京 04:00)"
+        elif [[ "$schedule" == "0 $local_h */7 * *" ]]; then
+            cron_status="每 7 天 (北京 04:00)"
+        else
+            cron_status="$schedule"
+        fi
+        cron_colored="${C_GREEN}开启 [${cron_status}]${C_RESET}"
+    fi
+
+    local asn_display="$asn"
+    [[ "$asn" =~ ^[0-9]+$ ]] && asn_display="AS$asn"
+
+    # 获取检测核心版本
+    local core_ver=""
+    if [[ -f "$IP_SCRIPT" ]]; then
+        core_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
+    fi
+    local ver_display=""
+    if [[ -n "$core_ver" ]]; then
+        ver_display="${C_GRAY}(Core: ${core_ver})${C_RESET}"
+    fi
+
+    echo ""
+    echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
+    echo -e "   ${C_BOLD}${C_GREEN}🔍 IP 质量存档监测系统 (IPQA) 状态概况${C_RESET}  ${ver_display}"
+    echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
+    echo ""
+    echo -e "  ${C_CYAN}📡 节点网络:${C_RESET} ${C_BOLD}${ip_v4}${C_RESET} (IPv4)  ${C_GRAY}│${C_RESET}  ${C_BOLD}${ip_v6}${C_RESET} (IPv6)"
+    echo -e "  ${C_CYAN}🏢 归属信息:${C_RESET} ${asn_display}  ${C_GRAY}│${C_RESET}  📍 ${loc}"
+    echo -e "  ${C_CYAN}⏰ 上次检测:${C_RESET} ${last_check}"
+    echo -e "  ${C_CYAN}📦 历史存档:${C_RESET} IPv4: ${C_GREEN}${count_v4}${C_RESET} 份  ${C_GRAY}│${C_RESET}  IPv6: ${C_GREEN}${count_v6}${C_RESET} 份"
+    echo -e "  ${C_CYAN}📅 时间跨度:${C_RESET} ${time_span}"
+    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored}"
+    echo ""
+    echo -e "${C_GRAY}── ${C_CYAN}🔔 最近风险变化提醒 (近 3 日)${C_RESET} ${C_GRAY}──────────────────────────────────────${C_RESET}"
+    render_daily_alerts_summary 3
+    echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
+    echo ""
+}
+
+# ==============================================================================
 # 主菜单 Panel 渲染
 # ==============================================================================
 render_panel() {
@@ -2772,26 +2889,17 @@ case "$1" in
         check_dependencies
         run_check false
         ;;
-    --status)
+    --status|status)
         check_dependencies
-        load_config
-        v4_cnt=$(count_json_files "$V4_DIR")
-        v6_cnt=$(count_json_files "$V6_DIR")
-        latest=$(get_latest_archive "$V4_DIR")
-        echo "IPQA Status"
-        echo "Archives: v4: $v4_cnt, v6: $v6_cnt"
-        if [[ -n "$latest" ]]; then
-            echo "Latest IP: $(jq -r '.Head.IP' "$latest")"
-            echo "Latest Time: $(basename "$latest" .json)"
-        fi
+        show_status
         ;;
-    --update)
+    --update|update)
         update_ipqa
         ;;
-    --uninstall)
+    --uninstall|uninstall)
         uninstall_ipqa
         ;;
-    --help|-h)
+    --help|-h|help)
         echo "IP Quality Archive (IPQA)"
         echo "用法: ipqa [选项]"
         echo ""
@@ -2799,7 +2907,7 @@ case "$1" in
         echo "  (无参数)      启动交互式终端图形界面 (TUI)"
         echo "  --check       立即执行一次检测并生成存档与告警"
         echo "  --cron        静默模式执行检测 (专用于 crontab 定时任务，自动同步最新核心)"
-        echo "  --status      查看当前存档与状态概况"
+        echo "  --status      查看当前状态概况与近三日风险变化提醒"
         echo "  --update      一键从 GitHub 在线更新 IPQA 主程序"
         echo "  --uninstall   干净卸载 IPQA 并清理任务与软链接"
         echo "  --help, -h    显示本帮助信息"

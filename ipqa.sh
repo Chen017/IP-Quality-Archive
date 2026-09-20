@@ -2603,6 +2603,22 @@ update_ipqa() {
 # 状态概况输出 (CLI)
 # ==============================================================================
 show_status() {
+    local use_color="false"
+    if [[ "$*" =~ --color ]]; then
+        use_color="true"
+    fi
+
+    local c_reset="" c_bold="" c_cyan="" c_green="" c_yellow="" c_red="" c_gray=""
+    if [[ "$use_color" == "true" ]]; then
+        c_reset="$C_RESET"
+        c_bold="$C_BOLD"
+        c_cyan="$C_CYAN"
+        c_green="$C_GREEN"
+        c_yellow="$C_YELLOW"
+        c_red="$C_RED"
+        c_gray="$C_GRAY"
+    fi
+
     load_config
 
     local latest_v4 latest_v6
@@ -2665,7 +2681,7 @@ show_status() {
 
     # 定时检测状态 (提取执行周期并显示友好名称)
     local cron_status="未开启"
-    local cron_colored="${C_GRAY}未开启${C_RESET}"
+    local cron_colored="未开启"
     local cron_line
     cron_line=$(crontab -l 2>/dev/null | grep -E "ipqa(\.sh)? --cron" | head -n 1 || true)
     if [[ -n "$cron_line" ]]; then
@@ -2682,7 +2698,15 @@ show_status() {
         else
             cron_status="$schedule"
         fi
-        cron_colored="${C_GREEN}开启 [${cron_status}]${C_RESET}"
+        if [[ "$use_color" == "true" ]]; then
+            cron_colored="${c_green}开启 [${cron_status}]${c_reset}"
+        else
+            cron_colored="开启 [${cron_status}]"
+        fi
+    else
+        if [[ "$use_color" == "true" ]]; then
+            cron_colored="${c_gray}未开启${c_reset}"
+        fi
     fi
 
     local asn_display="$asn"
@@ -2695,24 +2719,91 @@ show_status() {
     fi
     local ver_display=""
     if [[ -n "$core_ver" ]]; then
-        ver_display="${C_GRAY}(Core: ${core_ver})${C_RESET}"
+        if [[ "$use_color" == "true" ]]; then
+            ver_display="${c_gray}(Core: ${core_ver})${c_reset}"
+        else
+            ver_display="(Core: ${core_ver})"
+        fi
     fi
 
     echo ""
-    echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
-    echo -e "   ${C_BOLD}${C_GREEN}🔍 IP 质量存档监测系统 (IPQA) 状态概况${C_RESET}  ${ver_display}"
-    echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
+    echo -e "${c_cyan}${c_bold}══════════════════════════════════════════════════════════════════════${c_reset}"
+    echo -e "   ${c_bold}${c_green}🔍 IP 质量存档监测系统 (IPQA) 状态概况${c_reset}  ${ver_display}"
+    echo -e "${c_cyan}${c_bold}══════════════════════════════════════════════════════════════════════${c_reset}"
     echo ""
-    echo -e "  ${C_CYAN}📡 节点网络:${C_RESET} ${C_BOLD}${ip_v4}${C_RESET} (IPv4)  ${C_GRAY}│${C_RESET}  ${C_BOLD}${ip_v6}${C_RESET} (IPv6)"
-    echo -e "  ${C_CYAN}🏢 归属信息:${C_RESET} ${asn_display}  ${C_GRAY}│${C_RESET}  📍 ${loc}"
-    echo -e "  ${C_CYAN}⏰ 上次检测:${C_RESET} ${last_check}"
-    echo -e "  ${C_CYAN}📦 历史存档:${C_RESET} IPv4: ${C_GREEN}${count_v4}${C_RESET} 份  ${C_GRAY}│${C_RESET}  IPv6: ${C_GREEN}${count_v6}${C_RESET} 份"
-    echo -e "  ${C_CYAN}📅 时间跨度:${C_RESET} ${time_span}"
-    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored}"
+    echo -e "  ${c_cyan}📡 节点网络:${c_reset} ${c_bold}${ip_v4}${c_reset} (IPv4)  ${c_gray}│${c_reset}  ${c_bold}${ip_v6}${c_reset} (IPv6)"
+    echo -e "  ${c_cyan}🏢 归属信息:${c_reset} ${asn_display}  ${c_gray}│${c_reset}  📍 ${loc}"
+    echo -e "  ${c_cyan}⏰ 上次检测:${c_reset} ${last_check}"
+    echo -e "  ${c_cyan}📦 历史存档:${c_reset} IPv4: ${c_green}${count_v4}${c_reset} 份  ${c_gray}│${c_reset}  IPv6: ${c_green}${count_v6}${c_reset} 份"
+    echo -e "  ${c_cyan}📅 时间跨度:${c_reset} ${time_span}"
+    echo -e "  ${c_cyan}🔄 定时检测:${c_reset} ${cron_colored}"
     echo ""
-    echo -e "${C_GRAY}── ${C_CYAN}🔔 最近风险变化提醒 (近 3 日)${C_RESET} ${C_GRAY}──────────────────────────────────────${C_RESET}"
-    render_daily_alerts_summary 3
-    echo -e "${C_CYAN}${C_BOLD}══════════════════════════════════════════════════════════════════════${C_RESET}"
+    echo -e "${c_gray}── ${c_cyan}🔔 最近风险变化提醒 (近 3 日)${c_reset} ${c_gray}──────────────────────────────────────${c_reset}"
+
+    # 获取近三日有效日期（优先考虑有检测记录或告警记录的最近 3 个日期，并结合当前系统日期）
+    local target_dates=()
+    mapfile -t target_dates < <(
+        {
+            date +%Y-%m-%d
+            date -d '1 day ago' +%Y-%m-%d 2>/dev/null || true
+            date -d '2 days ago' +%Y-%m-%d 2>/dev/null || true
+            if [[ -f "$ALERT_LOG" ]]; then
+                cut -d' ' -f1 "$ALERT_LOG" 2>/dev/null
+            fi
+            if [[ -d "$V4_DIR" ]]; then
+                for f in "$V4_DIR"/*.json; do
+                    [[ -f "$f" ]] && basename "$f" | cut -d'_' -f1
+                done
+            fi
+            if [[ -d "$V6_DIR" ]]; then
+                for f in "$V6_DIR"/*.json; do
+                    [[ -f "$f" ]] && basename "$f" | cut -d'_' -f1
+                done
+            fi
+        } | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort -u -r | head -n 3
+    )
+
+    local matched_alerts=()
+    if [[ -f "$ALERT_LOG" && ${#target_dates[@]} -gt 0 ]]; then
+        local pattern
+        pattern="^($(IFS='|'; echo "${target_dates[*]}")) "
+        mapfile -t matched_alerts < <(grep -E "$pattern" "$ALERT_LOG" 2>/dev/null | grep -v "首次完成数据存档监测" | sort -t'|' -k1 -r)
+    fi
+
+    if (( ${#matched_alerts[@]} == 0 )); then
+        echo -e "  • 近三日无任何风险变化提醒记录，IP 质量状态保持稳定"
+    else
+        local i=1
+        for alt in "${matched_alerts[@]}"; do
+            [[ -z "$alt" ]] && continue
+            local a_time a_level a_msg a_ver
+            IFS='|' read -r a_time a_level a_msg a_ver <<< "$alt"
+
+            local badge=""
+            case "$a_level" in
+                CRITICAL) badge="${c_red}${c_bold}[严重]${c_reset}" ;;
+                WARNING)  badge="${c_yellow}[警告]${c_reset}" ;;
+                INFO)     badge="${c_cyan}[提示]${c_reset}" ;;
+                *)        badge="${c_gray}[记录]${c_reset}" ;;
+            esac
+
+            local ver_badge="${a_ver:-IPv4}"
+            if [[ "$use_color" == "true" ]]; then
+                if [[ "$a_ver" == "IPv6" ]]; then
+                    ver_badge="${c_cyan}IPv6${c_reset}"
+                else
+                    ver_badge="${c_green}IPv4${c_reset}"
+                fi
+            fi
+
+            local idx
+            printf -v idx "%2d" "$i"
+            echo -e "  [${idx}] ${a_time} │ ${ver_badge} │ ${badge} │ ${a_msg}"
+            (( ++i ))
+        done
+    fi
+
+    echo -e "${c_cyan}${c_bold}══════════════════════════════════════════════════════════════════════${c_reset}"
     echo ""
 }
 
@@ -2891,7 +2982,7 @@ case "$1" in
         ;;
     --status|status)
         check_dependencies
-        show_status
+        show_status "$@"
         ;;
     --update|update)
         update_ipqa
@@ -2907,7 +2998,7 @@ case "$1" in
         echo "  (无参数)      启动交互式终端图形界面 (TUI)"
         echo "  --check       立即执行一次检测并生成存档与告警"
         echo "  --cron        静默模式执行检测 (专用于 crontab 定时任务，自动同步最新核心)"
-        echo "  --status      查看当前状态概况与近三日风险变化提醒"
+        echo "  --status      查看当前状态概况与近三日风险变化详情 (纯文本输出适配远程运维，支持 --color)"
         echo "  --update      一键从 GitHub 在线更新 IPQA 主程序"
         echo "  --uninstall   干净卸载 IPQA 并清理任务与软链接"
         echo "  --help, -h    显示本帮助信息"

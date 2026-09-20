@@ -24,7 +24,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/mai
 | :--- | :--- |
 | `ipqa` | 打开终端交互菜单 |
 | `ipqa --check` | 立即执行一次完整检测并归档 |
-| `ipqa --status` | 查看当前状态概况与近三日风险变化提醒 |
+| `ipqa --status` | 查看当前状态概况与近三日风险变化详情（纯文本适配远程运维，支持 `--color`） |
 | `ipqa --cron` | 静默执行检测（Crontab 定时调用） |
 | `ipqa --update` | 更新主程序与检测引擎 |
 | `ipqa --uninstall` | 卸载程序并清理定时任务 |

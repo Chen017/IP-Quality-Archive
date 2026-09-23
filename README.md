@@ -127,7 +127,10 @@ Komari Emerald Insights
 | `ipqa --check` | 立即执行一次完整检测并归档 |
 | `ipqa --status` | 查看当前状态概况与近三日风险变化详情；纯文本适配远程运维，支持 `--color` |
 | `ipqa --cron` | 静默执行检测，适合 Crontab 定时调用 |
-| `ipqa --update` | 更新主程序与检测引擎 |
+| `ipqa --update` | 手动更新主程序与检测引擎 |
+| `ipqa --enable-auto-update` | 启用每日自动同步更新 IPQA 脚本本身（默认开启） |
+| `ipqa --disable-auto-update` | 禁用每日自动同步更新 IPQA 脚本本身（保留本地修改） |
+| `ipqa --auto-update [on/off]` | 查看或切换 IPQA 脚本自身自动更新状态 |
 | `ipqa --uninstall` | 卸载程序并清理定时任务 |
 
 ---
@@ -301,13 +304,37 @@ Availability History 与 IPQA 功能互相独立，不是 IPQA 的必需依赖�
 
 ---
 
-## 更新
+## 更新与自动同步
 
-更新程序与检测核心：
+### 手动全量更新
+
+一键从 GitHub 更新 IPQA 主程序与检测核心：
 
 ```bash
 ipqa --update
 ```
+
+### 脚本自身自动更新管理
+
+IPQA 默认在每日定时检测（或打开交互菜单）时，自动静默同步最新的 IPQA 管理脚本与上游检测核心。如果您希望**保留对 `ipqa.sh` 本地的修改**或在受限网络环境下避免频繁拉取 GitHub，可通过命令行随时禁用或重新开启脚本本身的自动更新（上游检测核心不受影响，仍正常每日检测更新）：
+
+- **禁用脚本自动更新**：
+  ```bash
+  ipqa --disable-auto-update
+  ```
+- **启用脚本自动更新（恢复默认）**：
+  ```bash
+  ipqa --enable-auto-update
+  ```
+- **查看当前自动更新状态**：
+  ```bash
+  ipqa --auto-update
+  ```
+- **单次免更新执行**：
+  ```bash
+  ipqa --check --no-auto-update
+  ipqa --cron --no-auto-update
+  ```
 
 更新不会改变已有历史归档的用途；如涉及数据结构升级，请以对应 Release / README 说明为准。
 

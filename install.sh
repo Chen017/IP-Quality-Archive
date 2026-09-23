@@ -83,6 +83,7 @@ do_uninstall() {
 }
 
 # 解析参数
+AUTO_UPDATE_SCRIPT=true
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -y|--yes)
@@ -93,6 +94,14 @@ while [[ $# -gt 0 ]]; do
             INSTALL_DIR="$2"
             shift 2
             ;;
+        --disable-auto-update|--no-auto-update)
+            AUTO_UPDATE_SCRIPT=false
+            shift
+            ;;
+        --enable-auto-update)
+            AUTO_UPDATE_SCRIPT=true
+            shift
+            ;;
         --uninstall|uninstall)
             ACTION="uninstall"
             shift
@@ -102,10 +111,12 @@ while [[ $# -gt 0 ]]; do
             echo "  bash install.sh [选项]"
             echo ""
             echo "选项:"
-            echo "  -y, --yes          非交互式操作，全部采用默认确认"
-            echo "  -d, --dir <路径>   指定安装/数据目录 (默认: ~/.ipqa)"
-            echo "  --uninstall        干净卸载 IPQA，清理定时任务、命令软链接与数据"
-            echo "  -h, --help         显示本帮助信息"
+            echo "  -y, --yes              非交互式操作，全部采用默认确认"
+            echo "  -d, --dir <路径>       指定安装/数据目录 (默认: ~/.ipqa)"
+            echo "  --disable-auto-update  安装时禁用每日自动同步更新 IPQA 脚本本身"
+            echo "  --enable-auto-update   安装时启用每日自动同步更新 IPQA 脚本本身 (默认开启)"
+            echo "  --uninstall            干净卸载 IPQA，清理定时任务、命令软链接与数据"
+            echo "  -h, --help             显示本帮助信息"
             exit 0
             ;;
         *)
@@ -312,6 +323,7 @@ SCORE_DIFF_THRESHOLD=10
 EXPECTED_YOUTUBE_REGION=""
 EXPECTED_NETFLIX_REGION=""
 KEEP_MAX_ARCHIVES=0
+AUTO_UPDATE_SCRIPT=${AUTO_UPDATE_SCRIPT:-true}
 EOF
 fi
 

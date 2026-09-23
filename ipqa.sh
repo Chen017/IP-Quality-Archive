@@ -88,10 +88,13 @@ load_config() {
     EXPECTED_YOUTUBE_REGION=""
     EXPECTED_NETFLIX_REGION=""
     KEEP_MAX_ARCHIVES=0
+    AUTO_UPDATE_SCRIPT="true"
 
     if [[ -f "$CONFIG_FILE" ]]; then
         # shellcheck disable=SC1090
         source "$CONFIG_FILE"
+        # 兼容旧配置或缺失配置，默认仍然开启自动更新
+        AUTO_UPDATE_SCRIPT="${AUTO_UPDATE_SCRIPT:-${AUTO_UPDATE:-true}}"
     else
         save_config
     fi
@@ -108,6 +111,7 @@ SCORE_DIFF_THRESHOLD=${SCORE_DIFF_THRESHOLD:-10}
 EXPECTED_YOUTUBE_REGION="${EXPECTED_YOUTUBE_REGION:-}"
 EXPECTED_NETFLIX_REGION="${EXPECTED_NETFLIX_REGION:-}"
 KEEP_MAX_ARCHIVES=${KEEP_MAX_ARCHIVES:-0}
+AUTO_UPDATE_SCRIPT="${AUTO_UPDATE_SCRIPT:-true}"
 EOF
 }
 
@@ -252,6 +256,7 @@ ensure_ip_script() {
 # 每天自动静默更新 IPQA 脚本及 IPQuality 检测核心 (静默执行)
 auto_update_if_needed() {
     local quiet="${1:-true}"
+    [[ -z "$AUTO_UPDATE_SCRIPT" ]] && load_config
     local stamp_file="$IPQA_HOME/.last_auto_update"
     if [[ ! -f "$stamp_file" && -f "$IPQA_HOME/.last_core_update" ]]; then
         mv "$IPQA_HOME/.last_core_update" "$stamp_file" 2>/dev/null || true
@@ -264,8 +269,8 @@ auto_update_if_needed() {
 
     # 上次更新距离现在超过 1 天 (86400 秒) 或核心文件不存在时自动静默更新
     if [[ ! -f "$IP_SCRIPT" ]] || (( now_sec - last_update >= 86400 )); then
-        [[ "$quiet" == "false" ]] && echo -e "${C_CYAN}🔄 距上次更新已超 1 天，正在静默更新脚本与检测核心...${C_RESET}"
-        log_msg "INFO" "触发 1 天周期自动静默更新脚本与检测核心"
+        [[ "$quiet" == "false" ]] && echo -e "${C_CYAN}🔄 距上次更新已超 1 天，正在静默更新检测核心与脚本...${C_RESET}"
+        log_msg "INFO" "触发 1 天周期自动静默更新"
 
         # 1. 自动同步 IPQuality 检测核心 (ip.sh)
         local tmp_ip="$IPQA_HOME/ip.sh.tmp"
@@ -287,30 +292,35 @@ auto_update_if_needed() {
             log_msg "WARN" "自动更新检测核心网络超时，继续使用本地核心"
         fi
 
-        # 2. 自动同步 IPQA 脚本 (ipqa.sh)
-        local tmp_ipqa="$IPQA_HOME/ipqa.sh.tmp"
-        if curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh -o "$tmp_ipqa" 2>/dev/null; then
-            sed -i 's/\r$//' "$tmp_ipqa" 2>/dev/null || true
-            if [[ -f "$IPQA_HOME/ipqa.sh" ]] && cmp -s "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"; then
-                rm -f "$tmp_ipqa"
-                log_msg "INFO" "IPQA 脚本已是最新版本，无需重复更新"
-            else
-                if bash -n "$tmp_ipqa" 2>/dev/null; then
-                    mv "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"
-                    chmod +x "$IPQA_HOME/ipqa.sh"
-                    log_msg "INFO" "检测到新版本，自动静默更新 IPQA 脚本成功"
-                else
-                    rm -f "$tmp_ipqa"
-                    log_msg "WARN" "自动更新 IPQA 脚本语法校验失败，保留当前脚本"
-                fi
-            fi
+        # 2. 自动同步 IPQA 脚本 (ipqa.sh) - 可受 AUTO_UPDATE_SCRIPT 控制
+        if [[ "$OVERRIDE_AUTO_UPDATE_SCRIPT" == "false" || "$AUTO_UPDATE_SCRIPT" == "false" || "$AUTO_UPDATE_SCRIPT" == "off" || "$AUTO_UPDATE_SCRIPT" == "0" || "$AUTO_UPDATE_SCRIPT" == "disable" || "$AUTO_UPDATE_SCRIPT" == "disabled" ]]; then
+            [[ "$quiet" == "false" ]] && echo -e "${C_GRAY}ℹ️  IPQA 脚本自动更新已禁用，跳过脚本自我同步${C_RESET}"
+            log_msg "INFO" "IPQA 脚本本身自动更新已禁用，跳过脚本自我同步"
         else
-            rm -f "$tmp_ipqa"
-            log_msg "WARN" "自动更新 IPQA 脚本网络超时，继续使用当前脚本"
+            local tmp_ipqa="$IPQA_HOME/ipqa.sh.tmp"
+            if curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh -o "$tmp_ipqa" 2>/dev/null; then
+                sed -i 's/\r$//' "$tmp_ipqa" 2>/dev/null || true
+                if [[ -f "$IPQA_HOME/ipqa.sh" ]] && cmp -s "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"; then
+                    rm -f "$tmp_ipqa"
+                    log_msg "INFO" "IPQA 脚本已是最新版本，无需重复更新"
+                else
+                    if bash -n "$tmp_ipqa" 2>/dev/null; then
+                        mv "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"
+                        chmod +x "$IPQA_HOME/ipqa.sh"
+                        log_msg "INFO" "检测到新版本，自动静默更新 IPQA 脚本成功"
+                    else
+                        rm -f "$tmp_ipqa"
+                        log_msg "WARN" "自动更新 IPQA 脚本语法校验失败，保留当前脚本"
+                    fi
+                fi
+            else
+                rm -f "$tmp_ipqa"
+                log_msg "WARN" "自动更新 IPQA 脚本网络超时，继续使用当前脚本"
+            fi
         fi
 
         echo "$now_sec" > "$stamp_file"
-        [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPQA 脚本与检测核心检查完成${C_RESET}\n"
+        [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPQA 检测核心与脚本检查完成${C_RESET}\n"
     fi
 }
 
@@ -720,9 +730,9 @@ run_check() {
     local quiet="${1:-false}"
     local start_sec
     start_sec=$(date +%s)
+    load_config
     ensure_ip_script || return 1
     auto_update_if_needed "$quiet"
-    load_config
 
     local ts
     ts=$(date +%Y-%m-%d_%H%M%S)
@@ -2600,6 +2610,51 @@ update_ipqa() {
 }
 
 # ==============================================================================
+# 命令行配置: 启用/禁用 IPQA 脚本本身自动更新 (set_auto_update)
+# ==============================================================================
+set_auto_update() {
+    local action="$1"
+    load_config
+    case "$action" in
+        enable|on|true|1)
+            AUTO_UPDATE_SCRIPT="true"
+            save_config
+            echo -e "${C_GREEN}✔ IPQA 脚本自身自动更新已启用 (默认模式)${C_RESET}"
+            echo -e "  已保存至配置: ${C_GRAY}$CONFIG_FILE${C_RESET}"
+            echo -e "  IPQA 将在每日检测时自动从 GitHub 同步主脚本最新版本。"
+            log_msg "INFO" "用户通过命令行启用了 IPQA 脚本自身自动更新"
+            ;;
+        disable|off|false|0)
+            AUTO_UPDATE_SCRIPT="false"
+            save_config
+            echo -e "${C_YELLOW}✔ IPQA 脚本自身自动更新已禁用${C_RESET}"
+            echo -e "  已保存至配置: ${C_GRAY}$CONFIG_FILE${C_RESET}"
+            echo -e "  IPQA 主脚本将不会被每日自动覆盖更新（保留本地修改与当前版本）。"
+            echo -e "  ${C_CYAN}提示: 上游 IPQuality 检测核心仍正常每日检测更新；您亦可随时通过 'ipqa --update' 手动全量更新。${C_RESET}"
+            log_msg "INFO" "用户通过命令行禁用了 IPQA 脚本自身自动更新"
+            ;;
+        status|"")
+            local status_text="${C_GREEN}开启 (默认)${C_RESET}"
+            if [[ "$AUTO_UPDATE_SCRIPT" == "false" || "$AUTO_UPDATE_SCRIPT" == "off" || "$AUTO_UPDATE_SCRIPT" == "0" ]]; then
+                status_text="${C_YELLOW}已禁用${C_RESET}"
+            fi
+            echo -e "当前脚本自动更新状态: $status_text"
+            echo -e "配置文件路径: ${C_GRAY}$CONFIG_FILE${C_RESET}"
+            echo ""
+            echo "命令行控制指令:"
+            echo "  ipqa --enable-auto-update   (启用脚本自动更新)"
+            echo "  ipqa --disable-auto-update  (禁用脚本自动更新)"
+            echo "  ipqa --auto-update [on|off] (切换状态)"
+            ;;
+        *)
+            echo -e "${C_RED}错误: 未知参数 '$action'${C_RESET}"
+            echo "用法: ipqa --auto-update [enable|disable|status|on|off] 或 ipqa --enable-auto-update / ipqa --disable-auto-update"
+            return 1
+            ;;
+    esac
+}
+
+# ==============================================================================
 # 状态概况输出 (CLI)
 # ==============================================================================
 show_status() {
@@ -2735,8 +2790,22 @@ show_status() {
     echo -e "  ${c_cyan}🏢 归属信息:${c_reset} ${asn_display}  ${c_gray}│${c_reset}  📍 ${loc}"
     echo -e "  ${c_cyan}⏰ 上次检测:${c_reset} ${last_check}"
     echo -e "  ${c_cyan}📦 历史存档:${c_reset} IPv4: ${c_green}${count_v4}${c_reset} 份  ${c_gray}│${c_reset}  IPv6: ${c_green}${count_v6}${c_reset} 份"
-    echo -e "  ${c_cyan}📅 时间跨度:${c_reset} ${time_span}"
-    echo -e "  ${c_cyan}🔄 定时检测:${c_reset} ${cron_colored}"
+    local script_update_display=""
+    if [[ "$AUTO_UPDATE_SCRIPT" == "false" || "$AUTO_UPDATE_SCRIPT" == "off" || "$AUTO_UPDATE_SCRIPT" == "0" ]]; then
+        if [[ "$use_color" == "true" ]]; then
+            script_update_display="${c_yellow}已禁用${c_reset}"
+        else
+            script_update_display="已禁用"
+        fi
+    else
+        if [[ "$use_color" == "true" ]]; then
+            script_update_display="${c_green}开启 (默认)${c_reset}"
+        else
+            script_update_display="开启 (默认)"
+        fi
+    fi
+
+    echo -e "  ${c_cyan}🔄 定时检测:${c_reset} ${cron_colored}  ${c_gray}│${c_reset}  ${c_cyan}🆙 脚本自更:${c_reset} ${script_update_display}"
     echo ""
     echo -e "${c_gray}── ${c_cyan}🔔 最近风险变化提醒 (近 3 日)${c_reset} ${c_gray}──────────────────────────────────────${c_reset}"
 
@@ -2911,9 +2980,13 @@ render_panel() {
     echo -e "  ${C_CYAN}📡 节点网络:${C_RESET} ${C_BOLD}${ip_v4}${C_RESET} (IPv4)  ${C_GRAY}│${C_RESET}  ${C_BOLD}${ip_v6}${C_RESET} (IPv6)"
     echo -e "  ${C_CYAN}🏢 归属信息:${C_RESET} ${asn_display}  ${C_GRAY}│${C_RESET}  📍 ${loc}"
     echo -e "  ${C_CYAN}⏰ 上次检测:${C_RESET} ${last_check}"
-    echo -e "  ${C_CYAN}📦 历史存档:${C_RESET} IPv4: ${C_GREEN}${count_v4}${C_RESET} 份  ${C_GRAY}│${C_RESET}  IPv6: ${C_GREEN}${count_v6}${C_RESET} 份"
-    echo -e "  ${C_CYAN}📅 时间跨度:${C_RESET} ${time_span}"
-    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored} ${C_GRAY}(每天静默自动更新脚本与核心)${C_RESET}"
+    local script_update_hint=""
+    if [[ "$AUTO_UPDATE_SCRIPT" == "false" || "$AUTO_UPDATE_SCRIPT" == "off" || "$AUTO_UPDATE_SCRIPT" == "0" ]]; then
+        script_update_hint="${C_YELLOW}(脚本自更: 已禁用)${C_RESET}"
+    else
+        script_update_hint="${C_GRAY}(每天静默更新核心与脚本)${C_RESET}"
+    fi
+    echo -e "  ${C_CYAN}🔄 定时检测:${C_RESET} ${cron_colored} ${script_update_hint}"
     echo ""
     echo -e "${C_GRAY}── ${C_CYAN}🔔 最近风险变化提醒${C_RESET} ${C_GRAY}───────────────────────────────────────────────${C_RESET}"
 
@@ -2974,11 +3047,42 @@ main_loop() {
 case "$1" in
     --cron)
         check_dependencies
+        for arg in "$@"; do
+            [[ "$arg" == "--no-auto-update" || "$arg" == "--disable-auto-update" ]] && OVERRIDE_AUTO_UPDATE_SCRIPT="false"
+        done
         run_check true
         ;;
     --check)
         check_dependencies
+        for arg in "$@"; do
+            [[ "$arg" == "--no-auto-update" || "$arg" == "--disable-auto-update" ]] && OVERRIDE_AUTO_UPDATE_SCRIPT="false"
+        done
         run_check false
+        ;;
+    --enable-auto-update|enable-auto-update)
+        check_dependencies
+        set_auto_update "enable"
+        ;;
+    --disable-auto-update|disable-auto-update)
+        check_dependencies
+        set_auto_update "disable"
+        ;;
+    --auto-update|auto-update)
+        check_dependencies
+        set_auto_update "$2"
+        ;;
+    --no-auto-update)
+        OVERRIDE_AUTO_UPDATE_SCRIPT="false"
+        if [[ "$2" == "--cron" ]]; then
+            check_dependencies
+            run_check true
+        elif [[ "$2" == "--check" ]]; then
+            check_dependencies
+            run_check false
+        else
+            check_dependencies
+            set_auto_update "disable"
+        fi
         ;;
     --status|status)
         check_dependencies
@@ -2995,13 +3099,16 @@ case "$1" in
         echo "用法: ipqa [选项]"
         echo ""
         echo "选项:"
-        echo "  (无参数)      启动交互式终端图形界面 (TUI)"
-        echo "  --check       立即执行一次检测并生成存档与告警"
-        echo "  --cron        静默模式执行检测 (专用于 crontab 定时任务，自动同步最新核心)"
-        echo "  --status      查看当前状态概况与近三日风险变化详情 (纯文本输出适配远程运维，支持 --color)"
-        echo "  --update      一键从 GitHub 在线更新 IPQA 主程序"
-        echo "  --uninstall   干净卸载 IPQA 并清理任务与软链接"
-        echo "  --help, -h    显示本帮助信息"
+        echo "  (无参数)                启动交互式终端图形界面 (TUI)"
+        echo "  --check                 立即执行一次检测并生成存档与告警"
+        echo "  --cron                  静默模式执行检测 (专用于 crontab 定时任务，自动同步最新核心)"
+        echo "  --status                查看当前状态概况与近三日风险变化详情 (纯文本输出适配远程运维，支持 --color)"
+        echo "  --update                一键从 GitHub 在线更新 IPQA 主程序与检测核心"
+        echo "  --enable-auto-update    启用每日自动同步更新 IPQA 脚本本身 (默认开启)"
+        echo "  --disable-auto-update   禁用每日自动同步更新 IPQA 脚本本身 (保留本地修改与版本)"
+        echo "  --auto-update [模式]    查看或设置脚本自动更新状态 (on/off/enable/disable/status)"
+        echo "  --uninstall             干净卸载 IPQA 并清理任务与软链接"
+        echo "  --help, -h              显示本帮助信息"
         ;;
     --test)
         ;;

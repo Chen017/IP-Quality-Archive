@@ -2642,19 +2642,12 @@ set_auto_update() {
             echo -e "配置文件路径: ${C_GRAY}$CONFIG_FILE${C_RESET}"
             echo ""
             echo "命令行控制指令:"
-            echo "  ipqa --enable-auto-update   (启用脚本自动更新)"
-            echo "  ipqa --disable-auto-update  (禁用脚本自动更新)"
-            echo "  ipqa --auto-update on       (启用脚本自动更新)"
-            echo "  ipqa --auto-update off      (禁用脚本自动更新)"
-            ;;
-        "[on/off]"|"<on/off>"|"[on|off]"|"<on|off>")
-            echo -e "${C_YELLOW}提示: 请将选项替换为具体的 on 或 off，例如:${C_RESET}"
-            echo "  ipqa --auto-update on   (启用脚本自动更新)"
-            echo "  ipqa --auto-update off  (禁用脚本自动更新)"
+            echo "  ipqa --enable-auto-update   (启用脚本自身自动更新)"
+            echo "  ipqa --disable-auto-update  (禁用脚本自身自动更新)"
             ;;
         *)
             echo -e "${C_RED}错误: 未知参数 '$action'${C_RESET}"
-            echo "用法: ipqa --auto-update [on|off|status] 或 ipqa --enable-auto-update / ipqa --disable-auto-update"
+            echo "用法: ipqa --auto-update (查看状态) 或 ipqa --enable-auto-update / ipqa --disable-auto-update"
             return 1
             ;;
     esac
@@ -3075,14 +3068,9 @@ case "$1" in
         set_auto_update "disable"
         exit 0
         ;;
-    --auto-update=*|auto-update=*)
-        check_dependencies
-        set_auto_update "${1#*=}"
-        exit 0
-        ;;
     --auto-update|auto-update)
         check_dependencies
-        set_auto_update "$2"
+        set_auto_update "${2:-status}"
         exit 0
         ;;
     --no-auto-update)
@@ -3121,7 +3109,7 @@ case "$1" in
         echo "  --update                一键从 GitHub 在线更新 IPQA 主程序与检测核心"
         echo "  --enable-auto-update    启用每日自动同步更新 IPQA 脚本本身 (默认开启)"
         echo "  --disable-auto-update   禁用每日自动同步更新 IPQA 脚本本身 (保留本地修改与版本)"
-        echo "  --auto-update [模式]    查看或设置脚本自动更新状态 (on/off/status)"
+        echo "  --auto-update           查看当前脚本自身自动更新状态"
         echo "  --uninstall             干净卸载 IPQA 并清理任务与软链接"
         echo "  --help, -h              显示本帮助信息"
         ;;

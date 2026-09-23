@@ -130,7 +130,7 @@ Komari Emerald Insights
 | `ipqa --update` | 手动更新主程序与检测引擎 |
 | `ipqa --enable-auto-update` | 启用每日自动同步更新 IPQA 脚本本身（默认开启） |
 | `ipqa --disable-auto-update` | 禁用每日自动同步更新 IPQA 脚本本身（保留本地修改） |
-| `ipqa --auto-update [on/off]` | 查看或切换 IPQA 脚本自身自动更新状态 |
+| `ipqa --auto-update on / off` | 查看或切换 IPQA 脚本自身自动更新状态 (支持 on/off/status) |
 | `ipqa --uninstall` | 卸载程序并清理定时任务 |
 
 ---

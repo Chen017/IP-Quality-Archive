@@ -298,7 +298,7 @@ auto_update_if_needed() {
             log_msg "INFO" "IPQA 脚本本身自动更新已禁用，跳过脚本自我同步"
         else
             local tmp_ipqa="$IPQA_HOME/ipqa.sh.tmp"
-            if curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh -o "$tmp_ipqa" 2>/dev/null; then
+            if curl -sL -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh?t=$(date +%s)" -o "$tmp_ipqa" 2>/dev/null; then
                 sed -i 's/\r$//' "$tmp_ipqa" 2>/dev/null || true
                 if [[ -f "$IPQA_HOME/ipqa.sh" ]] && cmp -s "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"; then
                     rm -f "$tmp_ipqa"
@@ -2574,7 +2574,7 @@ update_ipqa() {
     print_module_header "🔄 在线更新 IPQA 系统与检测核心"
     echo -e "${C_CYAN}正在检查并下载 IPQA 主程序最新版本...${C_RESET}"
     local tmp_file="$IPQA_HOME/ipqa.sh.tmp"
-    if curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh -o "$tmp_file"; then
+    if curl -sL -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh?t=$(date +%s)" -o "$tmp_file"; then
         if bash -n "$tmp_file" 2>/dev/null; then
             mv "$tmp_file" "$IPQA_HOME/ipqa.sh"
             sed -i 's/\r$//' "$IPQA_HOME/ipqa.sh" 2>/dev/null || true
@@ -2644,11 +2644,17 @@ set_auto_update() {
             echo "命令行控制指令:"
             echo "  ipqa --enable-auto-update   (启用脚本自动更新)"
             echo "  ipqa --disable-auto-update  (禁用脚本自动更新)"
-            echo "  ipqa --auto-update [on|off] (切换状态)"
+            echo "  ipqa --auto-update on       (启用脚本自动更新)"
+            echo "  ipqa --auto-update off      (禁用脚本自动更新)"
+            ;;
+        "[on/off]"|"<on/off>"|"[on|off]"|"<on|off>")
+            echo -e "${C_YELLOW}提示: 请将选项替换为具体的 on 或 off，例如:${C_RESET}"
+            echo "  ipqa --auto-update on   (启用脚本自动更新)"
+            echo "  ipqa --auto-update off  (禁用脚本自动更新)"
             ;;
         *)
             echo -e "${C_RED}错误: 未知参数 '$action'${C_RESET}"
-            echo "用法: ipqa --auto-update [enable|disable|status|on|off] 或 ipqa --enable-auto-update / ipqa --disable-auto-update"
+            echo "用法: ipqa --auto-update [on|off|status] 或 ipqa --enable-auto-update / ipqa --disable-auto-update"
             return 1
             ;;
     esac
@@ -3062,14 +3068,22 @@ case "$1" in
     --enable-auto-update|enable-auto-update)
         check_dependencies
         set_auto_update "enable"
+        exit 0
         ;;
     --disable-auto-update|disable-auto-update)
         check_dependencies
         set_auto_update "disable"
+        exit 0
+        ;;
+    --auto-update=*|auto-update=*)
+        check_dependencies
+        set_auto_update "${1#*=}"
+        exit 0
         ;;
     --auto-update|auto-update)
         check_dependencies
         set_auto_update "$2"
+        exit 0
         ;;
     --no-auto-update)
         OVERRIDE_AUTO_UPDATE_SCRIPT="false"
@@ -3083,6 +3097,7 @@ case "$1" in
             check_dependencies
             set_auto_update "disable"
         fi
+        exit 0
         ;;
     --status|status)
         check_dependencies
@@ -3106,13 +3121,18 @@ case "$1" in
         echo "  --update                一键从 GitHub 在线更新 IPQA 主程序与检测核心"
         echo "  --enable-auto-update    启用每日自动同步更新 IPQA 脚本本身 (默认开启)"
         echo "  --disable-auto-update   禁用每日自动同步更新 IPQA 脚本本身 (保留本地修改与版本)"
-        echo "  --auto-update [模式]    查看或设置脚本自动更新状态 (on/off/enable/disable/status)"
+        echo "  --auto-update [模式]    查看或设置脚本自动更新状态 (on/off/status)"
         echo "  --uninstall             干净卸载 IPQA 并清理任务与软链接"
         echo "  --help, -h              显示本帮助信息"
         ;;
     --test)
         ;;
-    *)
+    "")
         main_loop
+        ;;
+    *)
+        echo -e "${C_RED}错误: 未知选项 '$1'${C_RESET}\n"
+        echo "请运行 'ipqa --help' 查看可用选项。"
+        exit 1
         ;;
 esac

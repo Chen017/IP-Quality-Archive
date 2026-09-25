@@ -90,7 +90,7 @@ do_uninstall() {
     echo -e "\n${C_CYAN}▶ [1/3] 正在清理定时任务...${C_RESET}"
     if command -v crontab >/dev/null 2>&1; then
         local remaining
-        remaining=$(crontab -l 2>/dev/null | grep -vE 'ipqa(\.sh)?["'\''[:space:]]+--cron' | grep -v "# IPQA AUTO CHECK" || true)
+        remaining=$(crontab -l 2>/dev/null | grep -vE 'ipqa(\.sh)?["'\''[:space:]]+--cron' | grep -v '^# IPQA AUTO CHECK' || true)
         if [[ -n "$remaining" ]]; then
             echo "$remaining" | crontab -
         else
@@ -353,35 +353,19 @@ fi
 chmod 700 "$INSTALL_DIR" "$INSTALL_DIR/data" "$INSTALL_DIR/data/v4" "$INSTALL_DIR/data/v6" "$INSTALL_DIR/logs" 2>/dev/null || true
 echo -e "${C_GREEN}✔ 运行目录创建完成 (权限已设为 700)${C_RESET}"
 
-# 安全下载函数 (校验 HTTP 状态、文件大小、特定项目指纹与 Bash 语法) (S-01)
 # 上游 ip.sh 修补函数 (针对临时文件或指定目标执行 patch)
 patch_ip_script() {
     local target="$1"
     [[ ! -f "$target" ]] && return 1
 
-    # 1. 修复上游 ip.sh 未将 IP2Location 公司类型写入 JSON 的 bug
-    if ! grep -q 'Company: { IP2LOCATION' "$target" 2>/dev/null; then
-        sed -i '/Company: { ipapi:/a \type_updates+=".Type |= . * { Company: { IP2LOCATION: \\"$(clean_ansi "${ip2location[scomtype]:-null}")\\" } } | "' "$target" 2>/dev/null || true
-    fi
-    # 2. 修复上游 ip.sh 在 Check_DNS_3 中因缺少 dig 或超时将原生解锁误判为 DNS 解锁的 bug
-    if grep -q 'if \[ "$resultdnstext" == "0" \];then' "$target" 2>/dev/null; then
-        sed -i 's/if \[ "$resultdnstext" == "0" \];then/if [ "$resultdnstext" == "0" ] || [ -z "$resultdnstext" ];then/g' "$target" 2>/dev/null || true
-    fi
-    # 3. 修复上游 ip.sh 在 Check_DNS_IP 中因未解析到 IP 将原生解锁误判为 DNS 解锁的 bug
-    sed -i -e '/function Check_DNS_IP/,/function Check_DNS_1/{ /else/{ n; s/echo 0/echo 1/; } }' "$target" 2>/dev/null || true
-    # 4. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
+    # 1. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
     sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$target" 2>/dev/null || true
-    # 5. 修复上游 ip.sh 中 db_dbip 因单引号字面量 local tmpcurlarg='$CurlARG' 导致未能正确继承 -4/-6 参数的 bug
-    sed -i "s/local tmpcurlarg='\$CurlARG'/local tmpcurlarg=\"\$CurlARG\"/g" "$target" 2>/dev/null || true
-    # 6. 修复上游 ip.sh 中 Amazon Prime Video 地区提取贪婪匹配导致 JS 乱码与排版坍塌的 bug
-    if grep -q "currentTerritory//'|cut -f3" "$target" 2>/dev/null; then
-        sed -i 's@currentTerritory//'\''|cut -f3 -d'\''"'\''@currentTerritory":\\s*"[A-Za-z]{2}"'\''|head -n 1|cut -d"\\"" -f4@g' "$target" 2>/dev/null || true
-    fi
 
     return 0
 }
 
 # 安全下载函数 (校验 HTTP 状态、文件大小、特定项目指纹与 Bash 语法) (S-01)
+# 注：本安装器独立校验逻辑有意与 ipqa.sh 运行时的 validate_and_patch_core_candidate / validate_ipqa_candidate 保持相同契约与安全策略
 safe_download() {
     local url="$1"
     local dest="$2"
@@ -407,7 +391,7 @@ safe_download() {
     fi
 
     if [[ "$ptype" == "ipqa" ]]; then
-        if ! grep -qE "IP-Quality-Archive|IPQA" "$tmp" 2>/dev/null || ! grep -q "run_check" "$tmp" 2>/dev/null; then
+        if ! grep -qE "IP-Quality-Archive|IPQA" "$tmp" 2>/dev/null; then
             rm -f "$tmp"
             return 1
         fi
@@ -534,8 +518,7 @@ get_beijing_00_local_minute() {
 if [[ ! -f "$INSTALL_DIR/config.sh" ]]; then
     cat <<EOF > "$INSTALL_DIR/config.sh"
 # IPQA Configuration
-CHECK_INTERVAL_HOURS=24
-HAS_V6="auto"
+HAS_V6="${HAS_V6:-auto}"
 V6_CHECK_COUNT=0
 V6_PROBE_INTERVAL=10
 SCORE_DIFF_THRESHOLD=10
@@ -618,7 +601,7 @@ else
             fi
 
             # N-01: 健壮去重已有的 IPQA 定时任务 (匹配带引号及不带引号形式)
-            existing=$(crontab -l 2>/dev/null | grep -vE 'ipqa(\.sh)?["'\''[:space:]]+--cron' | grep -v "# IPQA AUTO CHECK" || true)
+            existing=$(crontab -l 2>/dev/null | grep -vE 'ipqa(\.sh)?["'\''[:space:]]+--cron' | grep -v '^# IPQA AUTO CHECK' || true)
 
             # M-19, M-20: 结合半小时/45分钟时区的分钟换算与北京时间校验，路径进行 shell 安全转义
             local_min=$(get_beijing_00_local_minute)

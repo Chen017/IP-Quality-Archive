@@ -116,6 +116,7 @@ parsed_output=$(echo "$test_json" | jq -r '[
     (.Info.Type // "--")
 ] | join("\u001f")')
 
+# shellcheck disable=SC2034 # t_ip, t_asn, t_org 用于保持 Unit Separator 字段位置对齐
 IFS=$'\x1f' read -r t_ip t_asn t_org t_city t_region t_type <<< "$parsed_output"
 
 if [[ "$t_city" == "" && "$t_region" == "California" && "$t_type" == "Geo-consistent" ]]; then
@@ -132,8 +133,9 @@ AUTO_UPDATE="false"
 SCORE_DIFF_THRESHOLD="15"
 EOF
 
-# 载入生产 load_config 函数并执行
+# 载入生产 load_config 与 save_config 函数并执行
 eval "$(sed -n '/^load_config()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^save_config()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 load_config
 
 if [[ "$AUTO_UPDATE_SCRIPT" == "false" ]]; then
@@ -146,6 +148,84 @@ if [[ "$SCORE_DIFF_THRESHOLD" == "15" ]]; then
     pass "正常解析数值配置 SCORE_DIFF_THRESHOLD=15"
 else
     fail "配置解析" "数值解析异常: $SCORE_DIFF_THRESHOLD"
+fi
+
+# 验证别名规范化至严格布尔值 (Phase A 2.3)
+cat > "$CONFIG_FILE" << 'EOF'
+AUTO_UPDATE_SCRIPT="disabled"
+EOF
+load_config
+[[ "$AUTO_UPDATE_SCRIPT" == "false" ]] && pass "AUTO_UPDATE_SCRIPT=disabled 规范化为 false" || fail "别名规范化" "disabled 解析失败: $AUTO_UPDATE_SCRIPT"
+
+cat > "$CONFIG_FILE" << 'EOF'
+AUTO_UPDATE_SCRIPT="off"
+EOF
+load_config
+[[ "$AUTO_UPDATE_SCRIPT" == "false" ]] && pass "AUTO_UPDATE_SCRIPT=off 规范化为 false" || fail "别名规范化" "off 解析失败: $AUTO_UPDATE_SCRIPT"
+
+cat > "$CONFIG_FILE" << 'EOF'
+AUTO_UPDATE_SCRIPT="enable"
+EOF
+load_config
+[[ "$AUTO_UPDATE_SCRIPT" == "true" ]] && pass "AUTO_UPDATE_SCRIPT=enable 规范化为 true" || fail "别名规范化" "enable 解析失败: $AUTO_UPDATE_SCRIPT"
+
+# 规范值优先于旧版值
+cat > "$CONFIG_FILE" << 'EOF'
+AUTO_UPDATE_SCRIPT="true"
+AUTO_UPDATE="false"
+EOF
+load_config
+[[ "$AUTO_UPDATE_SCRIPT" == "true" ]] && pass "AUTO_UPDATE_SCRIPT 优先于 legacy AUTO_UPDATE" || fail "别名优先级" "预期 true 实际: $AUTO_UPDATE_SCRIPT"
+
+# save_config 仅持久化标准 true/false
+cat > "$CONFIG_FILE" << 'EOF'
+AUTO_UPDATE_SCRIPT="disabled"
+EOF
+load_config
+save_config
+saved_val=$(grep '^AUTO_UPDATE_SCRIPT=' "$CONFIG_FILE" | cut -d'=' -f2 | tr -d '"')
+[[ "$saved_val" == "false" ]] && pass "save_config 仅持久化规范布尔值 false" || fail "配置回写规范化" "预期 false 实际: $saved_val"
+
+# 验证 normalize_score 解析与四舍五入 (Phase B 3.3)
+eval "$(sed -n '/^normalize_score()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+[[ "$(normalize_score "47")" == "47" ]] && pass "normalize_score 正常解析整数: 47 -> 47" || fail "normalize_score" "整数解析异常"
+[[ "$(normalize_score "1.56")" == "2" ]] && pass "normalize_score 正常解析并四舍五入纯小数: 1.56 -> 2" || fail "normalize_score" "纯小数解析异常"
+[[ "$(normalize_score "1.56%")" == "2" ]] && pass "normalize_score 正常解析并四舍五入百分比: 1.56% -> 2" || fail "normalize_score" "百分比解析异常"
+[[ "$(normalize_score "0.12%")" == "0" ]] && pass "normalize_score 正常解析小数百分比: 0.12% -> 0" || fail "normalize_score" "小数百分比解析异常"
+[[ "$(normalize_score "invalid_text")" == "" ]] && pass "normalize_score 正常静默丢弃非法文本" || fail "normalize_score" "非法文本未静默丢弃"
+
+# 验证 CLI auto-update 相关选项语义 (Phase D 5.5)
+auto_status_out=$(bash "$REPO_ROOT/ipqa.sh" --auto-update 2>&1 || true)
+if [[ "$auto_status_out" =~ "当前脚本自动更新状态" ]]; then
+    pass "ipqa --auto-update 仅报告状态信息"
+else
+    fail "CLI --auto-update" "未能输出状态信息: $auto_status_out"
+fi
+
+if ! bash "$REPO_ROOT/ipqa.sh" --auto-update enable >/dev/null 2>&1; then
+    pass "ipqa --auto-update 携带额外参数时被正确拦截并退出非 0"
+else
+    fail "CLI --auto-update" "携带多余参数未报错"
+fi
+
+bash "$REPO_ROOT/ipqa.sh" --enable-auto-update >/dev/null 2>&1 || true
+saved_en=$(grep '^AUTO_UPDATE_SCRIPT=' "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"')
+[[ "$saved_en" == "true" ]] && pass "ipqa --enable-auto-update 成功持久化配置为 true" || fail "CLI --enable-auto-update" "配置未持久化为 true: $saved_en"
+
+bash "$REPO_ROOT/ipqa.sh" --disable-auto-update >/dev/null 2>&1 || true
+saved_dis=$(grep '^AUTO_UPDATE_SCRIPT=' "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"')
+[[ "$saved_dis" == "false" ]] && pass "ipqa --disable-auto-update 成功持久化配置为 false" || fail "CLI --disable-auto-update" "配置未持久化为 false: $saved_dis"
+
+bash "$REPO_ROOT/ipqa.sh" --enable-auto-update >/dev/null 2>&1 || true
+if ! bash "$REPO_ROOT/ipqa.sh" --no-auto-update >/dev/null 2>&1; then
+    saved_after_no=$(grep '^AUTO_UPDATE_SCRIPT=' "$CONFIG_FILE" 2>/dev/null | cut -d'=' -f2 | tr -d '"')
+    if [[ "$saved_after_no" == "true" ]]; then
+        pass "单独执行 ipqa --no-auto-update 被拦截且未静默持久化修改配置"
+    else
+        fail "CLI --no-auto-update" "单独执行虽报错但配置被篡改: $saved_after_no"
+    fi
+else
+    fail "CLI --no-auto-update" "单独执行未被拦截报错"
 fi
 
 # 5. 时间范围过滤与关键帧自适应降采样测试 (N-02, N-03, S-03)
@@ -186,6 +266,35 @@ else
     fail "关键帧降采样" "预期返回 5 个采样点，实际返回 ${#sampled_res[@]} 个"
 fi
 
+# 测试 >250 份历史文件场景下的降采样与突变点保留 (Phase A 2.1)
+LARGE_SAMPLING_DIR="$TEST_ENV_DIR/sampling_large_260"
+mkdir -p "$LARGE_SAMPLING_DIR"
+base_payload='{"Head":{"IP":"1.1.1.1"},"Type":"isp","Score":10,"Factor":{},"Media":{},"Mail":{"Port25":"Yes","DNSBlacklist":{"Blacklisted":0}}}'
+changed_payload='{"Head":{"IP":"1.1.1.1"},"Type":"hosting","Score":90,"Factor":{},"Media":{},"Mail":{"Port25":"No","DNSBlacklist":{"Blacklisted":5}}}'
+
+for ((i=1; i<=260; i++)); do
+    f_date=$(printf "2026-08-01_%06d" "$i")
+    if [[ $i -eq 130 ]]; then
+        echo "$changed_payload" > "$LARGE_SAMPLING_DIR/${f_date}.json"
+    else
+        echo "$base_payload" > "$LARGE_SAMPLING_DIR/${f_date}.json"
+    fi
+done
+
+mapfile -t large_res < <(load_archive_files "$LARGE_SAMPLING_DIR" 5 8)
+first_file=$(basename "${large_res[0]}")
+last_file=$(basename "${large_res[-1]}")
+has_changed_point=false
+for lf in "${large_res[@]}"; do
+    [[ "$lf" == *"000130.json" ]] && has_changed_point=true
+done
+
+if [[ ${#large_res[@]} -eq 8 && "$first_file" == *"000001.json" && "$last_file" == *"000260.json" && "$has_changed_point" == "true" ]]; then
+    pass "超过 250 份历史文件正常完成降采样并保留首尾与关键变化点 (Phase A 2.1)"
+else
+    fail "超量历史降采样" "预期 8 个点且包含首尾及 130 突变点，实际总数: ${#large_res[@]}, 首: $first_file, 尾: $last_file, 包含突变点: $has_changed_point"
+fi
+
 # 6. Cron 正则与路径转义测试 (N-01, M-19, M-20, UI-01)
 echo -e "\n[测试组 6] Cron 规则识别、转义与半小时时区换算 (N-01, M-19, M-20, UI-01):"
 cron_cmd_quoted='"../ipqa" --cron'
@@ -211,9 +320,70 @@ else
     fail "Cron 友好描述" "未能识别动态规则: $friendly"
 fi
 
+# 验证三种官方预设的真实 Cron 规则友好名称识别 (Phase A 2.2)
+preset_daily='00 * * * * [ "$(TZ='\''Asia/Shanghai'\'' date +\%H:\%M)" = "04:00" ] && "/usr/local/bin/ipqa" --cron >> "/root/.ipqa/logs/ipqa.log" 2>&1'
+preset_3day='00 * * * * [ "$(TZ='\''Asia/Shanghai'\'' date +\%H:\%M)" = "04:00" ] && [ $(( ($(date +\%s) / 86400) \% 3 )) -eq 0 ] && "/usr/local/bin/ipqa" --cron >> "/root/.ipqa/logs/ipqa.log" 2>&1'
+preset_weekly='00 * * * * [ "$(TZ='\''Asia/Shanghai'\'' date +\%H:\%M)" = "04:00" ] && [ "$(TZ='\''Asia/Shanghai'\'' date +\%u)" = "7" ] && "/usr/local/bin/ipqa" --cron >> "/root/.ipqa/logs/ipqa.log" 2>&1'
+
+name_daily=$(get_cron_friendly_name "$preset_daily")
+name_3day=$(get_cron_friendly_name "$preset_3day")
+name_weekly=$(get_cron_friendly_name "$preset_weekly")
+
+[[ "$name_daily" == "每天 (北京 04:00)" ]] && pass "正确识别预设 [1] 每天规则: '$name_daily'" || fail "Cron预设名称" "每天规则解析失败: $name_daily"
+[[ "$name_3day" == "每 3 天一次 (北京 04:00)" ]] && pass "正确识别预设 [2] 每 3 天规则: '$name_3day'" || fail "Cron预设名称" "每3天规则解析失败: $name_3day"
+[[ "$name_weekly" == "每 7 天一次 (北京 04:00)" ]] && pass "正确识别预设 [3] 每 7 天规则: '$name_weekly'" || fail "Cron预设名称" "每7天规则解析失败: $name_weekly"
+
+# 验证不同时区下北京时间到本地分钟换算 (Phase H 9.1)
+for tz_test in "UTC" "Asia/Shanghai" "Asia/Kolkata" "Asia/Kathmandu" "IST-5:30" "NPT-5:45" "NST3:30"; do
+    calc_min=$(TZ="$tz_test" get_beijing_00_local_minute)
+    if [[ ! "$calc_min" =~ ^[0-5][0-9]$ ]]; then
+        fail "分钟换算" "时区 $tz_test 下换算分钟超出有效区间 [00-59]: $calc_min"
+    fi
+done
+
+min_half=$(TZ="IST-5:30" get_beijing_00_local_minute)
+min_45=$(TZ="NPT-5:45" get_beijing_00_local_minute)
+min_neg_half=$(TZ="NST3:30" get_beijing_00_local_minute)
+min_utc=$(TZ="UTC" get_beijing_00_local_minute)
+
+if [[ "$min_utc" == "00" && "$min_half" == "30" && "$min_45" == "45" && "$min_neg_half" == "30" ]]; then
+    pass "get_beijing_00_local_minute 在整点、+30m、+45m、-30m 时区下均能精确计算分钟且处于 00-59 (Phase H 9.1)"
+else
+    fail "分钟换算" "非整小时换算异常: UTC=$min_utc, IST-5:30=$min_half, NPT-5:45=$min_45, NST3:30=$min_neg_half"
+fi
+
+# 验证 crontab 过滤逻辑严格剔除 IPQA 标记与所有格式的 IPQA 定时命令，并保留非相关项 (Phase F 7.4)
+eval "$(sed -n '/^get_crontab_without_ipqa()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+synthetic_crontab=$(cat << 'EOF'
+0 2 * * * /usr/bin/backup-data.sh >> /var/log/backup.log 2>&1
+# IPQA AUTO CHECK
+00 * * * * [ "$(TZ='Asia/Shanghai' date +\%H:\%M)" = "04:00" ] && "/usr/local/bin/ipqa" --cron >> "/root/.ipqa/logs/ipqa.log" 2>&1
+30 4 * * * /opt/ipqa/ipqa.sh --cron
+15 3 * * * /usr/bin/certbot renew --quiet
+EOF
+)
+
+crontab() {
+    if [[ "$1" == "-l" ]]; then
+        echo "$synthetic_crontab"
+        return 0
+    fi
+    return 1
+}
+
+filtered_cron=$(get_crontab_without_ipqa)
+unset -f crontab
+
+if [[ "$filtered_cron" == *"backup-data.sh"* && "$filtered_cron" == *"certbot renew"* && ! "$filtered_cron" =~ "ipqa" && ! "$filtered_cron" =~ "IPQA AUTO CHECK" ]]; then
+    pass "get_crontab_without_ipqa 成功彻底过滤 IPQA 标记与带引号/无引号 Cron 命令，且保留无关定时任务 (Phase F 7.4)"
+else
+    fail "Crontab过滤" "过滤残留或误删正常定时任务: $filtered_cron"
+fi
+
 # 7. 生产日志脱敏与终端控制符过滤测试 (S-17)
 echo -e "\n[测试组 7] 终端控制字符彻底脱敏测试 (S-17):"
 ALERT_LOG="$IPQA_DIR/alerts.log"
+# shellcheck disable=SC2034 # 供 eval 载入的 log_msg 及 rotate_logs_if_needed 动态使用
 LOG_FILE="$IPQA_DIR/ipqa.log"
 eval "$(sed -n '/^log_msg()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 eval "$(sed -n '/^rotate_logs_if_needed()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
@@ -360,11 +530,14 @@ echo "$unhealthy_json" > "$UNHEALTHY_V4/${d2}_120000.json"
 
 ALERT_LOG="$UNHEALTHY_DIR/alerts.log"
 touch "$ALERT_LOG"
+# shellcheck disable=SC2034 # 终端颜色变量供 eval 载入的 render_daily_alerts_summary 动态使用
 C_RESET="" C_GREEN="" C_GRAY="" C_YELLOW="" C_RED="" C_BOLD=""
 eval "$(sed -n '/^render_daily_alerts_summary()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 
 output_summary=$(
+    # shellcheck disable=SC2034 # 目录变量供 eval 载入的 render_daily_alerts_summary 动态使用
     V4_DIR="$UNHEALTHY_V4"
+    # shellcheck disable=SC2034
     V6_DIR="$UNHEALTHY_V6"
     render_daily_alerts_summary 1 2>/dev/null || true
 )
@@ -387,29 +560,24 @@ chmod 755 "$FORMAL_CORE"
 
 eval "$(sed -n '/^patch_ip_script()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 
-# 1. 正常 candidate: patch 前合法，patch 后合法 -> 成功原子替换
+# 1. 正常 candidate (含待修补的 YouTube ANSI 污染): patch 前合法，patch 成功后语法仍合法 -> 成功原子替换
 CANDIDATE_VALID="$PATCH_TEST_DIR/candidate_valid.sh"
 cat > "$CANDIDATE_VALID" << 'EOF'
 #!/usr/bin/env bash
 # script_version="2.0"
 # IPQuality Check_DNS
-function Check_DNS_IP() {
-    if [ "$1" == "x" ]; then
-        echo 1
-    else
-        echo 0
-    fi
-}
+youtube[uregion]="  $Font_Red[CN]$Font_Green   "
+echo "core logic"
 EOF
 
-if bash -n "$CANDIDATE_VALID" && patch_ip_script "$CANDIDATE_VALID" && bash -n "$CANDIDATE_VALID"; then
+if bash -n "$CANDIDATE_VALID" && patch_ip_script "$CANDIDATE_VALID" && bash -n "$CANDIDATE_VALID" && grep -q 'youtube\[uregion\]="  \[CN\]   "' "$CANDIDATE_VALID" && ! grep -q 'Font_Red' "$CANDIDATE_VALID"; then
     mv -f "$CANDIDATE_VALID" "$FORMAL_CORE"
-    pass "有效 candidate 通过 patch 及后验 bash -n，成功原子替换正式核心"
+    pass "有效 candidate 成功应用 YouTube patch 并通过后验 bash -n，成功原子替换正式核心"
 else
     fail "Core Patch" "合法 candidate patch 或验证失败"
 fi
 
-# 2. 异常 candidate: patch 后语法校验失败 -> 不得覆盖正式核心
+# 2. 异常 candidate: 语法错误 candidate 在替换前被校验拦截 -> 不得覆盖正式核心 (Phase H 9.2)
 CANDIDATE_BROKEN="$PATCH_TEST_DIR/candidate_broken.sh"
 cat > "$CANDIDATE_BROKEN" << 'EOF'
 #!/usr/bin/env bash
@@ -427,15 +595,14 @@ else
     rm -f "$CANDIDATE_BROKEN"
 fi
 
-if [[ "$candidate_replaced" == "false" ]] && grep -q "Check_DNS_IP" "$FORMAL_CORE"; then
-    pass "破坏性 candidate 校验失败并被拦截，正式核心完整保留不受污染"
+if [[ "$candidate_replaced" == "false" ]] && grep -q 'youtube\[uregion\]="  \[CN\]   "' "$FORMAL_CORE"; then
+    pass "语法错误 candidate 校验失败并在替换前被拦截，正式核心完整保留不受污染"
 else
-    fail "Core Patch 防御" "破坏性 candidate 未被拦截或正式核心被污染"
+    fail "Core Patch 防御" "语法错误 candidate 未被拦截或正式核心被污染"
 fi
 
 # 12. Debian/Ubuntu-only 系统支持与未知发行版拒绝测试
 echo -e "\n[测试组 12] Debian/Ubuntu-only 系统支持与未知发行版拒绝测试:"
-eval "$(sed -n '/^has_cmd()/,/^}/p' "$REPO_ROOT/install.sh")"
 eval "$(sed -n '/^check_os_support()/,/^}/p' "$REPO_ROOT/install.sh")"
 
 OS_RELEASE_DEBIAN="$TEST_ENV_DIR/os_release_debian"

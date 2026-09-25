@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPL--3.0-blue.svg" alt="GPL-3.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="AGPL-3.0"></a>
   <a href="https://github.com/xykt/IPQuality"><img src="https://img.shields.io/badge/Core-IPQuality-10b981" alt="IPQuality"></a>
   <a href="https://github.com/Chen017/komari-plugin-ipqa-alert-report"><img src="https://img.shields.io/badge/Komari-IPQA%20Integration-7c3aed" alt="Komari Integration"></a>
   <a href="https://github.com/Chen017/komari-emerald-suite"><img src="https://img.shields.io/badge/Komari%20Emerald-Ecosystem-10b981" alt="Komari Emerald Ecosystem"></a>
@@ -367,6 +367,6 @@ ipqa --uninstall
 
 ## 许可证与致谢
 
-- 本项目采用 [GPL-3.0](LICENSE) 协议。
+- 本项目采用 [AGPL-3.0](LICENSE) 协议。
 - 检测核心基于 [IPQuality (xykt/IPQuality)](https://github.com/xykt/IPQuality)。
 - 感谢 Komari 及相关开源项目提供的扩展与集成基础。

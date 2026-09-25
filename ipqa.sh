@@ -16,8 +16,75 @@ ALERT_LOG="$DATA_DIR/alerts.log"
 IP_SCRIPT="$IPQA_HOME/ip.sh"
 LOG_FILE="$LOGS_DIR/ipqa.log"
 
-# 创建运行目录
+# 创建运行目录并设置安全权限 (S-10)
 mkdir -p "$V4_DIR" "$V6_DIR" "$LOGS_DIR"
+chmod 700 "$IPQA_HOME" "$DATA_DIR" "$V4_DIR" "$V6_DIR" "$LOGS_DIR" 2>/dev/null || true
+[[ -f "$CONFIG_FILE" ]] && chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+
+# 检查是否为危险或系统根路径 (M-04)
+is_dangerous_path() {
+    local target="$1"
+    [[ -z "$target" ]] && return 0
+    local canon
+    canon=$(cd "$target" 2>/dev/null && pwd || true)
+    [[ -z "$canon" ]] && canon="$target"
+    case "$canon" in
+        /|/root|/home|/etc|/var|/usr|/bin|/sbin|/lib|/lib64|/boot|/dev|/sys|/proc|/tmp|"$HOME")
+            return 0
+            ;;
+        *)
+            if [[ "$canon" =~ ^/[^/]+$ ]]; then
+                return 0
+            fi
+            return 1
+            ;;
+    esac
+}
+
+# 进程并发锁控制 (M-08)
+acquire_lock() {
+    local lock_name="${1:-run}"
+    local lock_dir="$IPQA_HOME/.lock_${lock_name}"
+    local pid_file="$lock_dir/pid"
+    if mkdir "$lock_dir" 2>/dev/null; then
+        echo "$$" > "$pid_file" 2>/dev/null || true
+        return 0
+    fi
+    if [[ -f "$pid_file" ]]; then
+        local old_pid
+        old_pid=$(cat "$pid_file" 2>/dev/null || true)
+        if [[ -n "$old_pid" ]] && ! kill -0 "$old_pid" 2>/dev/null; then
+            echo "$$" > "$pid_file" 2>/dev/null || true
+            return 0
+        fi
+    fi
+    return 1
+}
+
+release_lock() {
+    local lock_name="${1:-run}"
+    local lock_dir="$IPQA_HOME/.lock_${lock_name}"
+    rm -rf "$lock_dir" 2>/dev/null || true
+}
+
+# 日志自动轮转控制 (S-16, 单文件上限 5MB)
+rotate_logs_if_needed() {
+    local max_size=$(( 5 * 1024 * 1024 ))
+    local log_f
+    for log_f in "$LOG_FILE" "$ALERT_LOG"; do
+        if [[ -f "$log_f" ]]; then
+            local f_size
+            f_size=$(wc -c < "$log_f" 2>/dev/null || echo 0)
+            if (( f_size > max_size )); then
+                rm -f "${log_f}.2" 2>/dev/null || true
+                [[ -f "${log_f}.1" ]] && mv "${log_f}.1" "${log_f}.2" 2>/dev/null || true
+                mv "$log_f" "${log_f}.1" 2>/dev/null || true
+                touch "$log_f" 2>/dev/null || true
+                chmod 600 "$log_f" 2>/dev/null || true
+            fi
+        fi
+    done
+}
 
 # ANSI 颜色与文字样式定义
 C_RESET="\033[0m"
@@ -76,7 +143,7 @@ print_module_header() {
 }
 
 # ==============================================================================
-# 配置管理
+# 配置管理 (S-04, S-05: 安全键值解析与转义，避免执行任意代码)
 # ==============================================================================
 load_config() {
     # 默认值
@@ -91,28 +158,58 @@ load_config() {
     AUTO_UPDATE_SCRIPT="true"
 
     if [[ -f "$CONFIG_FILE" ]]; then
-        # shellcheck disable=SC1090
-        source "$CONFIG_FILE"
-        # 兼容旧配置或缺失配置，默认仍然开启自动更新
-        AUTO_UPDATE_SCRIPT="${AUTO_UPDATE_SCRIPT:-${AUTO_UPDATE:-true}}"
+        while IFS='=' read -r raw_key raw_val || [[ -n "$raw_key" ]]; do
+            raw_key=$(echo "$raw_key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [[ -z "$raw_key" || "$raw_key" =~ ^# ]] && continue
+            raw_val=$(echo "$raw_val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            raw_val="${raw_val#\"}"
+            raw_val="${raw_val%\"}"
+            raw_val="${raw_val#\'}"
+            raw_val="${raw_val%\'}"
+            case "$raw_key" in
+                CHECK_INTERVAL_HOURS) [[ "$raw_val" =~ ^[0-9]+$ ]] && CHECK_INTERVAL_HOURS="$raw_val" ;;
+                HAS_V6) [[ "$raw_val" =~ ^(auto|true|false)$ ]] && HAS_V6="$raw_val" ;;
+                V6_CHECK_COUNT) [[ "$raw_val" =~ ^[0-9]+$ ]] && V6_CHECK_COUNT="$raw_val" ;;
+                V6_PROBE_INTERVAL) [[ "$raw_val" =~ ^[0-9]+$ ]] && V6_PROBE_INTERVAL="$raw_val" ;;
+                SCORE_DIFF_THRESHOLD) [[ "$raw_val" =~ ^[0-9]+$ ]] && SCORE_DIFF_THRESHOLD="$raw_val" ;;
+                EXPECTED_YOUTUBE_REGION) EXPECTED_YOUTUBE_REGION=$(echo "$raw_val" | tr -cd 'a-zA-Z0-9_-') ;;
+                EXPECTED_NETFLIX_REGION) EXPECTED_NETFLIX_REGION=$(echo "$raw_val" | tr -cd 'a-zA-Z0-9_-') ;;
+                KEEP_MAX_ARCHIVES) [[ "$raw_val" =~ ^[0-9]+$ ]] && KEEP_MAX_ARCHIVES="$raw_val" ;;
+                AUTO_UPDATE_SCRIPT) [[ "$raw_val" =~ ^(true|false|on|off|1|0|enable|disable|disabled)$ ]] && AUTO_UPDATE_SCRIPT="$raw_val" ;;
+            esac
+        done < "$CONFIG_FILE"
+        AUTO_UPDATE_SCRIPT="${AUTO_UPDATE_SCRIPT:-true}"
     else
         save_config
     fi
 }
 
 save_config() {
+    local safe_v6 safe_yt safe_nf safe_auto
+    safe_v6=$(echo "$HAS_V6" | tr -cd 'a-zA-Z0-9_-')
+    safe_yt=$(echo "$EXPECTED_YOUTUBE_REGION" | tr -cd 'a-zA-Z0-9_-')
+    safe_nf=$(echo "$EXPECTED_NETFLIX_REGION" | tr -cd 'a-zA-Z0-9_-')
+    safe_auto=$(echo "$AUTO_UPDATE_SCRIPT" | tr -cd 'a-zA-Z0-9_-')
+    local safe_check_int safe_v6_cnt safe_v6_probe safe_score_diff safe_keep
+    safe_check_int=$(( 10#${CHECK_INTERVAL_HOURS:-24} ))
+    safe_v6_cnt=$(( 10#${V6_CHECK_COUNT:-0} ))
+    safe_v6_probe=$(( 10#${V6_PROBE_INTERVAL:-10} ))
+    safe_score_diff=$(( 10#${SCORE_DIFF_THRESHOLD:-10} ))
+    safe_keep=$(( 10#${KEEP_MAX_ARCHIVES:-0} ))
+
     cat <<EOF > "$CONFIG_FILE"
 # IPQA Configuration
-CHECK_INTERVAL_HOURS=${CHECK_INTERVAL_HOURS:-24}
-HAS_V6="${HAS_V6:-auto}"
-V6_CHECK_COUNT=${V6_CHECK_COUNT:-0}
-V6_PROBE_INTERVAL=${V6_PROBE_INTERVAL:-10}
-SCORE_DIFF_THRESHOLD=${SCORE_DIFF_THRESHOLD:-10}
-EXPECTED_YOUTUBE_REGION="${EXPECTED_YOUTUBE_REGION:-}"
-EXPECTED_NETFLIX_REGION="${EXPECTED_NETFLIX_REGION:-}"
-KEEP_MAX_ARCHIVES=${KEEP_MAX_ARCHIVES:-0}
-AUTO_UPDATE_SCRIPT="${AUTO_UPDATE_SCRIPT:-true}"
+CHECK_INTERVAL_HOURS=$safe_check_int
+HAS_V6="${safe_v6:-auto}"
+V6_CHECK_COUNT=$safe_v6_cnt
+V6_PROBE_INTERVAL=$safe_v6_probe
+SCORE_DIFF_THRESHOLD=$safe_score_diff
+EXPECTED_YOUTUBE_REGION="$safe_yt"
+EXPECTED_NETFLIX_REGION="$safe_nf"
+KEEP_MAX_ARCHIVES=$safe_keep
+AUTO_UPDATE_SCRIPT="${safe_auto:-true}"
 EOF
+    chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 }
 
 # ==============================================================================
@@ -161,28 +258,33 @@ fmt_type_badge() {
 
 # 自动计算服务器当前时区下对应“北京时间凌晨 04:00”的小时数 (0-23)
 get_beijing_4am_local_hour() {
-    local h
-    h=$(date -d 'TZ="Asia/Shanghai" 04:00' +%H 2>/dev/null | sed 's/^0//')
-    if [[ -z "$h" || ! "$h" =~ ^[0-9]+$ ]]; then
-        local z
-        z=$(date +%z)
-        local sign="${z:0:1}"
-        local zh="${z:1:2}"
-        local zm="${z:3:2}"
-        local local_offset_sec=$(( (10#$zh * 3600) + (10#$zm * 60) ))
-        [[ "$sign" == "-" ]] && local_offset_sec=$(( -local_offset_sec ))
-        local local_sec=$(( -14400 + local_offset_sec ))
-        local mod_sec=$(( local_sec % 86400 ))
-        (( mod_sec < 0 )) && mod_sec=$(( mod_sec + 86400 ))
-        h=$(( mod_sec / 3600 ))
+    local bj_epoch local_h_calc
+    bj_epoch=$(TZ="Asia/Shanghai" date -d "today 04:00" +%s 2>/dev/null || echo 0)
+    if (( bj_epoch > 0 )); then
+        local_h_calc=$(date -d "@$bj_epoch" +%H 2>/dev/null | sed 's/^0//')
+        if [[ -n "$local_h_calc" && "$local_h_calc" =~ ^[0-9]+$ ]]; then
+            echo "$local_h_calc"
+            return
+        fi
     fi
-    echo "$h"
+    local z
+    z=$(date +%z)
+    local sign="${z:0:1}"
+    local zh="${z:1:2}"
+    local zm="${z:3:2}"
+    local local_offset_sec=$(( (10#$zh * 3600) + (10#$zm * 60) ))
+    [[ "$sign" == "-" ]] && local_offset_sec=$(( -local_offset_sec ))
+    local local_sec=$(( -14400 + local_offset_sec ))
+    local mod_sec=$(( local_sec % 86400 ))
+    (( mod_sec < 0 )) && mod_sec=$(( mod_sec + 86400 ))
+    echo "$(( mod_sec / 3600 ))"
 }
 
 log_msg() {
     local level="$1"
     shift
     local msg="$*"
+    rotate_logs_if_needed
     local ts
     ts=$(date +"%Y-%m-%d %H:%M:%S")
     echo "[$ts] [$level] $msg" >> "$LOG_FILE"
@@ -230,7 +332,6 @@ patch_ip_script() {
 ensure_ip_script() {
     if [[ ! -f "$IP_SCRIPT" ]]; then
         echo -e "${C_CYAN}正在初始化并下载 IPQuality 上游脚本缓存...${C_RESET}"
-        # 优先检查本地同仓库是否有源码
         local script_dir
         script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         if [[ -f "$script_dir/ip.sh" ]]; then
@@ -238,16 +339,25 @@ ensure_ip_script() {
         elif [[ -f "$script_dir/IP-Quality-Detection-Project/ip.sh" ]]; then
             cp "$script_dir/IP-Quality-Detection-Project/ip.sh" "$IP_SCRIPT"
         else
-            curl -sL https://IP.Check.Place -o "$IP_SCRIPT" || curl -sL https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$IP_SCRIPT"
+            local tmp_ip="$IPQA_HOME/.ip.sh.tmp.$$.$RANDOM"
+            if curl -fsSL --connect-timeout 8 --max-time 30 https://IP.Check.Place -o "$tmp_ip" 2>/dev/null || curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_ip" 2>/dev/null; then
+                if [[ $(wc -c < "$tmp_ip" 2>/dev/null || echo 0) -gt 1000 ]] && bash -n "$tmp_ip" 2>/dev/null && grep -qE "IPQuality|Check_DNS|script_version" "$tmp_ip" 2>/dev/null; then
+                    mv "$tmp_ip" "$IP_SCRIPT"
+                else
+                    rm -f "$tmp_ip"
+                fi
+            else
+                rm -f "$tmp_ip"
+            fi
         fi
         sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
-        chmod +x "$IP_SCRIPT"
+        chmod +x "$IP_SCRIPT" 2>/dev/null || true
         patch_ip_script
     else
         patch_ip_script
     fi
     if [[ ! -f "$IP_SCRIPT" ]]; then
-        echo -e "${C_RED}错误: 无法获取 IPQuality 脚本缓存 ($IP_SCRIPT)${C_RESET}"
+        echo -e "${C_RED}错误: 无法获取有效的 IPQuality 脚本缓存 ($IP_SCRIPT)${C_RESET}"
         return 1
     fi
     return 0
@@ -272,20 +382,29 @@ auto_update_if_needed() {
         [[ "$quiet" == "false" ]] && echo -e "${C_CYAN}🔄 距上次更新已超 1 天，正在静默更新检测核心与脚本...${C_RESET}"
         log_msg "INFO" "触发 1 天周期自动静默更新"
 
-        # 1. 自动同步 IPQuality 检测核心 (ip.sh)
-        local tmp_ip="$IPQA_HOME/ip.sh.tmp"
-        if curl -sL https://IP.Check.Place -o "$tmp_ip" 2>/dev/null || curl -sL https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_ip" 2>/dev/null; then
+        local core_success=false
+        local ipqa_success=false
+
+        # 1. 自动同步 IPQuality 检测核心 (ip.sh) (M-05, M-08)
+        local tmp_ip="$IPQA_HOME/.ip.sh.tmp.$$.$RANDOM"
+        if curl -fsSL --connect-timeout 8 --max-time 30 https://IP.Check.Place -o "$tmp_ip" 2>/dev/null || curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_ip" 2>/dev/null; then
             sed -i 's/\r$//' "$tmp_ip" 2>/dev/null || true
-            if [[ -f "$IP_SCRIPT" ]] && cmp -s "$tmp_ip" "$IP_SCRIPT"; then
-                rm -f "$tmp_ip"
-                log_msg "INFO" "IPQuality 检测核心已是最新版本，无需重复更新"
+            if [[ $(wc -c < "$tmp_ip" 2>/dev/null || echo 0) -gt 1000 ]] && bash -n "$tmp_ip" 2>/dev/null && grep -qE "IPQuality|Check_DNS|script_version" "$tmp_ip" 2>/dev/null; then
+                if [[ -f "$IP_SCRIPT" ]] && cmp -s "$tmp_ip" "$IP_SCRIPT"; then
+                    rm -f "$tmp_ip"
+                    log_msg "INFO" "IPQuality 检测核心已是最新版本，无需重复更新"
+                else
+                    mv "$tmp_ip" "$IP_SCRIPT"
+                    chmod +x "$IP_SCRIPT"
+                    patch_ip_script
+                    local new_ver
+                    new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
+                    log_msg "INFO" "检测到新版本，自动更新检测核心成功，版本: ${new_ver:-未知}"
+                fi
+                core_success=true
             else
-                mv "$tmp_ip" "$IP_SCRIPT"
-                chmod +x "$IP_SCRIPT"
-                patch_ip_script
-                local new_ver
-                new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
-                log_msg "INFO" "检测到新版本，自动更新检测核心成功，版本: ${new_ver:-未知}"
+                rm -f "$tmp_ip"
+                log_msg "WARN" "自动更新检测核心完整性或语法校验失败，保留本地核心"
             fi
         else
             rm -f "$tmp_ip"
@@ -296,22 +415,29 @@ auto_update_if_needed() {
         if [[ "$OVERRIDE_AUTO_UPDATE_SCRIPT" == "false" || "$AUTO_UPDATE_SCRIPT" == "false" || "$AUTO_UPDATE_SCRIPT" == "off" || "$AUTO_UPDATE_SCRIPT" == "0" || "$AUTO_UPDATE_SCRIPT" == "disable" || "$AUTO_UPDATE_SCRIPT" == "disabled" ]]; then
             [[ "$quiet" == "false" ]] && echo -e "${C_GRAY}ℹ️  IPQA 脚本自动更新已禁用，跳过脚本自我同步${C_RESET}"
             log_msg "INFO" "IPQA 脚本本身自动更新已禁用，跳过脚本自我同步"
+            ipqa_success=true
         else
-            local tmp_ipqa="$IPQA_HOME/ipqa.sh.tmp"
-            if curl -sL -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh?t=$(date +%s)" -o "$tmp_ipqa" 2>/dev/null; then
+            local tmp_ipqa="$IPQA_HOME/.ipqa.sh.tmp.$$.$RANDOM"
+            if curl -fsSL --connect-timeout 8 --max-time 30 -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh?t=$(date +%s)" -o "$tmp_ipqa" 2>/dev/null; then
                 sed -i 's/\r$//' "$tmp_ipqa" 2>/dev/null || true
-                if [[ -f "$IPQA_HOME/ipqa.sh" ]] && cmp -s "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"; then
-                    rm -f "$tmp_ipqa"
-                    log_msg "INFO" "IPQA 脚本已是最新版本，无需重复更新"
-                else
-                    if bash -n "$tmp_ipqa" 2>/dev/null; then
-                        mv "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"
-                        chmod +x "$IPQA_HOME/ipqa.sh"
-                        log_msg "INFO" "检测到新版本，自动静默更新 IPQA 脚本成功"
-                    else
+                if [[ $(wc -c < "$tmp_ipqa" 2>/dev/null || echo 0) -gt 1000 ]] && grep -qE "IP-Quality-Archive|IPQA" "$tmp_ipqa" 2>/dev/null; then
+                    if [[ -f "$IPQA_HOME/ipqa.sh" ]] && cmp -s "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"; then
                         rm -f "$tmp_ipqa"
-                        log_msg "WARN" "自动更新 IPQA 脚本语法校验失败，保留当前脚本"
+                        log_msg "INFO" "IPQA 脚本已是最新版本，无需重复更新"
+                    else
+                        if bash -n "$tmp_ipqa" 2>/dev/null; then
+                            mv "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"
+                            chmod 755 "$IPQA_HOME/ipqa.sh"
+                            log_msg "INFO" "检测到新版本，自动静默更新 IPQA 脚本成功"
+                        else
+                            rm -f "$tmp_ipqa"
+                            log_msg "WARN" "自动更新 IPQA 脚本语法校验失败，保留当前脚本"
+                        fi
                     fi
+                    ipqa_success=true
+                else
+                    rm -f "$tmp_ipqa"
+                    log_msg "WARN" "自动更新 IPQA 脚本校验失败，保留当前脚本"
                 fi
             else
                 rm -f "$tmp_ipqa"
@@ -319,8 +445,11 @@ auto_update_if_needed() {
             fi
         fi
 
-        echo "$now_sec" > "$stamp_file"
-        [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPQA 检测核心与脚本检查完成${C_RESET}\n"
+        # M-09: 仅在检测或更新至少一项连通成功时写入更新时间戳，避免失败后错误静默24小时
+        if [[ "$core_success" == "true" || "$ipqa_success" == "true" ]]; then
+            echo "$now_sec" > "$stamp_file"
+            [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPQA 检测核心与脚本检查完成${C_RESET}\n"
+        fi
     fi
 }
 
@@ -333,16 +462,17 @@ validate_json() {
     jq empty "$file" >/dev/null 2>&1
 }
 
-# 获取最新一份有效 JSON
+# 获取最新一份有效 JSON (S-03)
 get_latest_archive() {
     local dir="$1"
     [[ ! -d "$dir" ]] && return 1
-    local latest
-    latest=$(find "$dir" -maxdepth 1 -name '*.json' 2>/dev/null | sort -r | head -n 1)
-    if [[ -n "$latest" && -f "$latest" ]]; then
-        echo "$latest"
-        return 0
-    fi
+    local f
+    while read -r f; do
+        if [[ -n "$f" && -f "$f" ]] && validate_json "$f"; then
+            echo "$f"
+            return 0
+        fi
+    done < <(find "$dir" -maxdepth 1 -name '*.json' 2>/dev/null | sort -r)
     return 1
 }
 
@@ -393,8 +523,9 @@ clean_region_str() {
         echo "${BASH_REMATCH[1]^^}"
         return
     fi
-    if [[ "$cleaned" =~ ([A-Za-z]{2}) ]]; then
-        echo "${BASH_REMATCH[1]^^}"
+    # Q-01: 严格匹配独立/边界两个大写字母地区代码 (如 US-CA 中的 US，或 [HK])，避免从 Global/Failed 等词汇中误提取
+    if [[ "$cleaned" =~ (^|[^A-Za-z])([A-Z]{2})([^A-Za-z]|$) ]]; then
+        echo "${BASH_REMATCH[2]^^}"
     else
         cleaned=$(echo "$cleaned" | tr -d '[] ' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         [[ -z "$cleaned" || "$cleaned" == "null" ]] && cleaned="--"
@@ -411,15 +542,15 @@ add_alert() {
     local ip_ver="$3"
     local now
     now=$(date +"%Y-%m-%d %H:%M:%S")
+
+    # S-17: 过滤日志注入：去除 ANSI 乱码、回车换行与管道符
+    level=$(echo "$level" | tr -cd 'A-Z')
+    ip_ver=$(echo "$ip_ver" | tr -cd 'a-zA-Z0-9')
+    msg=$(echo "$msg" | sed -r "s/\x1B\[([0-9]{1,2}(;[0-9]{1,2})?)?[mGK]//g" | tr -d '\r\n')
+    msg="${msg//|//}"
+
     echo "$now|$level|$msg|$ip_ver" >> "$ALERT_LOG"
     log_msg "ALERT-$level" "[$ip_ver] $msg"
-}
-
-get_recent_alerts() {
-    local count="${1:-5}"
-    if [[ -f "$ALERT_LOG" ]]; then
-        sort -t'|' -k1 "$ALERT_LOG" 2>/dev/null | tail -n "$count"
-    fi
 }
 
 # 按天聚合最近风险变化提醒 (展示最近 target_days 天的每日变化统计与智能摘要)
@@ -447,7 +578,7 @@ render_daily_alerts_summary() {
     )
 
     if [[ ${#active_dates[@]} -eq 0 ]]; then
-        echo -e "  ${C_GREEN}• 暂无历史数据，IP 质量状态保持稳定${C_RESET}"
+        echo -e "  ${C_GRAY}• 暂无历史检测归档数据${C_RESET}"
         return
     fi
 
@@ -460,8 +591,16 @@ render_daily_alerts_summary() {
         fi
         local count=${#day_alerts[@]}
 
+        local has_checks=false
+        if compgen -G "$V4_DIR/${d}_*.json" >/dev/null 2>&1 || compgen -G "$V6_DIR/${d}_*.json" >/dev/null 2>&1; then
+            has_checks=true
+        fi
+
         if (( count == 0 )); then
-            if [[ -f "$ALERT_LOG" ]] && grep -q "^$d .*首次完成数据存档监测" "$ALERT_LOG" 2>/dev/null; then
+            # M-16: 区分当日是否有检测记录，避免无检测时误报各数据库状态稳定良好
+            if [[ "$has_checks" == "false" ]]; then
+                echo -e "  ${C_GRAY}• [${short_date}] 当日无检测记录${C_RESET}"
+            elif [[ -f "$ALERT_LOG" ]] && grep -q "^$d .*首次完成数据存档监测" "$ALERT_LOG" 2>/dev/null; then
                 echo -e "  ${C_GREEN}• [${short_date}] 首次完成建档监测: 各权威数据库及流媒体状态稳定良好${C_RESET}"
             else
                 echo -e "  ${C_GREEN}• [${short_date}] 运行平稳 (0 风险变动): 各权威数据库及流媒体状态稳定良好${C_RESET}"
@@ -561,9 +700,15 @@ compare_and_alert() {
     local new_file="$2"
     local ip_ver="$3"
 
-    # 获取前一份有效存档文件（排除当前 new_file）
-    local prev_file
-    prev_file=$(find "$dir" -maxdepth 1 -name '*.json' 2>/dev/null | sort -r | grep -v "$(basename "$new_file")" | head -n 1)
+    # 获取前一份有效存档文件（排除当前 new_file）(S-03)
+    local prev_file=""
+    local f
+    while read -r f; do
+        if [[ -n "$f" && "$f" != "$new_file" && -f "$f" ]] && validate_json "$f"; then
+            prev_file="$f"
+            break
+        fi
+    done < <(find "$dir" -maxdepth 1 -name '*.json' 2>/dev/null | sort -r)
 
     if [[ -z "$prev_file" || ! -f "$prev_file" ]]; then
         add_alert "INFO" "首次完成数据存档监测" "$ip_ver"
@@ -607,7 +752,7 @@ compare_and_alert() {
         fi
     fi
 
-    # 2. 对比流媒体解锁状态
+    # 2. 对比流媒体解锁状态 (M-17: 涵盖所有解锁到受限/仅网页/机房等降级场景)
     local all_media=("TikTok" "DisneyPlus" "Netflix" "Youtube" "AmazonPrimeVideo" "Reddit" "ChatGPT")
     for svc in "${all_media[@]}"; do
         local old_status new_status
@@ -617,15 +762,19 @@ compare_and_alert() {
             local svc_disp="$svc"
             [[ "$svc" == "AmazonPrimeVideo" ]] && svc_disp="AmazonPV"
             [[ "$svc" == "DisneyPlus" ]] && svc_disp="Disney+"
-            if [[ "$new_status" =~ (失败|屏蔽|No|Failed) || ("$old_status" =~ (解锁|Yes) && "$new_status" =~ 仅自制) ]]; then
+            if [[ "$new_status" =~ (失败|屏蔽|No|Blocked|Block|Failed|中国|China|禁会员|NoPrem) || ( "$old_status" =~ (解锁|Yes|Native) && "$new_status" =~ (仅自制|NF\.Only|仅网页|WebOnly|仅APP|APPOnly|机房|IDC|待支持|Pending) ) ]]; then
                 add_alert "CRITICAL" "$svc_disp 解锁状态发生降级: [$old_status] 变为 [$new_status]" "$ip_ver"
+            elif [[ "$old_status" =~ (仅自制|NF\.Only) && "$new_status" =~ (仅网页|WebOnly|仅APP|APPOnly|机房|IDC|待支持|Pending) ]]; then
+                add_alert "WARNING" "$svc_disp 解锁状态发生降级: [$old_status] 变为 [$new_status]" "$ip_ver"
+            elif [[ "$new_status" =~ (解锁|Yes|Native) ]]; then
+                add_alert "INFO" "$svc_disp 解锁状态改善: [$old_status] 提升为 [$new_status]" "$ip_ver"
             else
                 add_alert "INFO" "$svc_disp 解锁状态变化: [$old_status] 变为 [$new_status]" "$ip_ver"
             fi
         fi
     done
 
-    # 3. 对比各风控数据库等级变动 (基于各官方标准判定等级跨越，非简单固定分值相减)
+    # 3. 对比各风控数据库等级变动 (基于各官方标准判定等级跨越，并结合分值阈值 S-04)
     local score_keys=("IP2LOCATION" "SCAMALYTICS" "ipapi" "AbuseIPDB" "IPQS" "DBIP")
     for sk in "${score_keys[@]}"; do
         local old_raw new_raw
@@ -657,6 +806,17 @@ compare_and_alert() {
                 fi
             elif (( new_rank < old_rank )); then
                 add_alert "INFO" "$sk 风险等级改善恢复: [$old_badge] 恢复为 [$new_badge] (评分: $old_raw -> $new_raw)" "$ip_ver"
+            fi
+        elif [[ "$old_badge" == "$new_badge" ]]; then
+            # S-04: 等级未跨越时，若分值绝对数值大幅跃升超过配置阈值，触发警示
+            local sc_old sc_new
+            sc_old=$(normalize_score "$old_raw")
+            sc_new=$(normalize_score "$new_raw")
+            if [[ "$sc_old" =~ ^[0-9]+$ && "$sc_new" =~ ^[0-9]+$ ]]; then
+                local diff=$(( sc_new - sc_old ))
+                if (( SCORE_DIFF_THRESHOLD > 0 && diff >= SCORE_DIFF_THRESHOLD )); then
+                    add_alert "WARNING" "$sk 风险评分大幅上涨 +${diff} 分 (同处于 [$new_badge] 等级, 评分: $old_raw -> $new_raw)" "$ip_ver"
+                fi
             fi
         fi
     done
@@ -730,27 +890,50 @@ run_check() {
     local quiet="${1:-false}"
     local start_sec
     start_sec=$(date +%s)
+
+    # 并发锁控制 (M-08)
+    if ! acquire_lock "run"; then
+        if [[ "$quiet" == "true" ]]; then
+            log_msg "WARN" "检测到已有 IPQA 任务正在运行，跳过本次周期"
+            return 0
+        else
+            echo -e "${C_YELLOW}⚠ 另一个 IPQA 任务正在运行中，请等待其完成后重试${C_RESET}"
+            return 1
+        fi
+    fi
+    trap 'release_lock "run"' EXIT INT TERM
+
     load_config
-    ensure_ip_script || return 1
+    if ! ensure_ip_script; then
+        release_lock "run"
+        trap - EXIT INT TERM
+        return 1
+    fi
     auto_update_if_needed "$quiet"
 
     local ts
     ts=$(date +%Y-%m-%d_%H%M%S)
     local v4_out="$V4_DIR/${ts}.json"
     local v6_out="$V6_DIR/${ts}.json"
+    local v4_tmp="$V4_DIR/.${ts}.tmp.$$.json"
+    local v6_tmp="$V6_DIR/.${ts}.tmp.$$.json"
+    local v4_success=false
+    local v6_success=false
 
     [[ "$quiet" == "false" ]] && echo -e "${C_CYAN}▶ [1/2] 开始执行 IPv4 质量检测...${C_RESET}"
     log_msg "INFO" "开始执行 IPv4 检测: $ts"
 
-    # 执行 IPv4 检测并输出 JSON (-y 自动安装, -n 跳过前置依赖检查, -p 隐私模式不外发链接)
-    bash "$IP_SCRIPT" -4 -y -n -p -o "$v4_out" >/dev/null 2>&1
+    # 执行 IPv4 检测并输出到临时 JSON (S-03)
+    bash "$IP_SCRIPT" -4 -y -n -p -o "$v4_tmp" >/dev/null 2>&1
 
-    if validate_json "$v4_out"; then
+    if validate_json "$v4_tmp"; then
+        mv "$v4_tmp" "$v4_out"
+        v4_success=true
         [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPv4 检测完成并已有效存档: $(basename "$v4_out")${C_RESET}"
         log_msg "INFO" "IPv4 检测成功: $v4_out"
         compare_and_alert "$V4_DIR" "$v4_out" "IPv4"
     else
-        rm -f "$v4_out"
+        rm -f "$v4_tmp" "$v4_out" 2>/dev/null || true
         [[ "$quiet" == "false" ]] && echo -e "${C_YELLOW}⚠ IPv4 检测未生成有效 JSON (可能网络超时或接口受限)${C_RESET}"
         log_msg "WARN" "IPv4 检测生成数据无效，已自动清理"
     fi
@@ -772,19 +955,21 @@ run_check() {
     if [[ "$should_check_v6" == "true" ]]; then
         [[ "$quiet" == "false" ]] && echo -e "${C_CYAN}▶ [2/2] 开始执行 IPv6 质量检测...${C_RESET}"
         log_msg "INFO" "开始执行 IPv6 检测: $ts"
-        bash "$IP_SCRIPT" -6 -y -n -p -o "$v6_out" >/dev/null 2>&1
+        bash "$IP_SCRIPT" -6 -y -n -p -o "$v6_tmp" >/dev/null 2>&1
 
-        if validate_json "$v6_out"; then
+        if validate_json "$v6_tmp"; then
             local v6_ip
-            v6_ip=$(jq -r '.Head.IP // empty' "$v6_out")
+            v6_ip=$(jq -r '.Head.IP // empty' "$v6_tmp")
             if [[ -n "$v6_ip" && "$v6_ip" != "null" ]]; then
+                mv "$v6_tmp" "$v6_out"
+                v6_success=true
                 [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPv6 检测完成并已有效存档: $(basename "$v6_out")${C_RESET}"
                 log_msg "INFO" "IPv6 检测成功: $v6_out"
                 compare_and_alert "$V6_DIR" "$v6_out" "IPv6"
                 HAS_V6="true"
                 save_config
             else
-                rm -f "$v6_out"
+                rm -f "$v6_tmp" "$v6_out" 2>/dev/null || true
                 [[ "$quiet" == "false" ]] && echo -e "${C_GRAY}ℹ 未检测到 IPv6 地址，跳过 v6 归档${C_RESET}"
                 if [[ "$HAS_V6" == "auto" ]]; then
                     HAS_V6="false"
@@ -792,36 +977,56 @@ run_check() {
                 fi
             fi
         else
-            rm -f "$v6_out"
-            [[ "$quiet" == "false" ]] && echo -e "${C_GRAY}ℹ 本机当前不支持 IPv6${C_RESET}"
-            if [[ "$HAS_V6" == "auto" ]]; then
-                HAS_V6="false"
-                save_config
+            rm -f "$v6_tmp" "$v6_out" 2>/dev/null || true
+            # M-11: 区分网络临时失败与本机是否真正支持 IPv6
+            local host_has_v6=false
+            if ip -6 addr show scope global 2>/dev/null | grep -q "inet6" || ip -6 route show default 2>/dev/null | grep -q "default"; then
+                host_has_v6=true
+            fi
+            if [[ "$host_has_v6" == "false" ]]; then
+                [[ "$quiet" == "false" ]] && echo -e "${C_GRAY}ℹ 本机当前不支持 IPv6${C_RESET}"
+                if [[ "$HAS_V6" == "auto" ]]; then
+                    HAS_V6="false"
+                    save_config
+                fi
+            else
+                [[ "$quiet" == "false" ]] && echo -e "${C_YELLOW}⚠ 本机具备 IPv6 但检测未生成有效数据 (可能网络超时)，保留探测状态${C_RESET}"
+                log_msg "WARN" "本机具备 IPv6 但检测核心返回无效 JSON"
             fi
         fi
     else
         [[ "$quiet" == "false" ]] && echo -e "${C_GRAY}ℹ 根据配置已跳过 IPv6 检测 (HAS_V6=$HAS_V6)${C_RESET}"
     fi
 
-    # 清理超额历史文件
+    # 清理超额历史文件 (M-22: 路径空格与 NUL 安全)
     if [[ "$KEEP_MAX_ARCHIVES" -gt 0 ]]; then
-        local count_v4 count_v6
-        count_v4=$(count_json_files "$V4_DIR")
-        if (( count_v4 > KEEP_MAX_ARCHIVES )); then
-            local remove_count=$((count_v4 - KEEP_MAX_ARCHIVES))
-            find "$V4_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort | head -n "$remove_count" | xargs rm -f 2>/dev/null
-        fi
-        count_v6=$(count_json_files "$V6_DIR")
-        if (( count_v6 > KEEP_MAX_ARCHIVES )); then
-            local remove_count=$((count_v6 - KEEP_MAX_ARCHIVES))
-            find "$V6_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort | head -n "$remove_count" | xargs rm -f 2>/dev/null
-        fi
+        for target_clean_dir in "$V4_DIR" "$V6_DIR"; do
+            local clean_files=()
+            mapfile -t clean_files < <(find "$target_clean_dir" -maxdepth 1 -name '*.json' 2>/dev/null | sort)
+            local total_clean=${#clean_files[@]}
+            if (( total_clean > KEEP_MAX_ARCHIVES )); then
+                local remove_cnt=$(( total_clean - KEEP_MAX_ARCHIVES ))
+                for (( ci=0; ci<remove_cnt; ci++ )); do
+                    rm -f "${clean_files[ci]}" 2>/dev/null || true
+                done
+            fi
+        done
     fi
+
+    release_lock "run"
+    trap - EXIT INT TERM
 
     local end_sec
     end_sec=$(date +%s)
     local elapsed=$((end_sec - start_sec))
     [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}${C_BOLD}检测完成！${C_RESET}${C_GRAY}(耗时 ${elapsed} 秒)${C_RESET}\n"
+
+    # M-07: 显式返回执行状态 (至少一项成功则为 0，全部失败为 1)
+    if [[ "$v4_success" == "true" || "$v6_success" == "true" ]]; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 # ==============================================================================
@@ -848,40 +1053,29 @@ load_archive_files() {
     fi
 
     local filtered=()
-    local now_sec
-    now_sec=$(date +%s)
-
-    local cutoff_sec=0
-    case "$range_type" in
-        1) cutoff_sec=$((now_sec - 86400)) ;;     # 24 小时
-        2) cutoff_sec=$((now_sec - 604800)) ;;    # 7 天
-        3) cutoff_sec=$((now_sec - 1209600)) ;;   # 14 天
-        4) cutoff_sec=$((now_sec - 2592000)) ;;   # 30 天
-        5) cutoff_sec=0 ;;                        # 全部
-        *) cutoff_sec=0 ;;
-    esac
-
-    for f in "${all_files[@]}"; do
-        local fname
-        fname=$(basename "$f" .json)
-        # 解析时间戳
-        if [[ "$fname" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})_([0-9]{2})([0-9]{2})([0-9]{2}) ]]; then
-            local f_date="${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}"
-            local f_sec
-            f_sec=$(date -d "$f_date" +%s 2>/dev/null || echo 0)
-            if (( f_sec >= cutoff_sec )); then
+    if (( cutoff_sec == 0 )); then
+        filtered=("${all_files[@]}")
+    else
+        # S-12: 使用时间戳字符串比对，大幅提升长期大量存档下的加载性能
+        local cutoff_str
+        cutoff_str=$(date -d "@$cutoff_sec" +%Y-%m-%d_%H%M%S 2>/dev/null || echo "")
+        for f in "${all_files[@]}"; do
+            local fname
+            fname=$(basename "$f" .json)
+            if [[ -n "$cutoff_str" && "$fname" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$ ]]; then
+                if [[ "$fname" > "$cutoff_str" || "$fname" == "$cutoff_str" ]]; then
+                    filtered+=("$f")
+                fi
+            else
                 filtered+=("$f")
             fi
-        else
-            filtered+=("$f")
-        fi
-    done
+        done
+    fi
 
     local count=${#filtered[@]}
     if [[ $count -eq 0 ]]; then
-        # 如果过滤后为空，保底展示最新文件
-        filtered=("${all_files[@]}")
-        count=${#filtered[@]}
+        # M-12: 范围内无文件时如实返回空，不再错误重载全部历史
+        return 0
     fi
 
     # 如果选中的点多于 max_points，采用【变化感知关键帧自适应降采样】：
@@ -946,9 +1140,9 @@ load_archive_files() {
             else
                 # 变动点数量超过上限：首尾锚定，中间变动点按时间轴等距精选
                 local mid_needed=$(( max_points - 2 ))
-                local mid_candidates=("${change_indices[@]}")
-                if [[ ${#mid_candidates[@]} -gt 0 && ${mid_candidates[-1]} -eq $((count - 1)) ]]; then
-                    unset 'mid_candidates[${#mid_candidates[@]}-1]'
+                local last_cand_idx=$(( ${#mid_candidates[@]} - 1 ))
+                if [[ ${#mid_candidates[@]} -gt 0 && ${mid_candidates[last_cand_idx]} -eq $((count - 1)) ]]; then
+                    unset 'mid_candidates[last_cand_idx]'
                     mid_candidates=("${mid_candidates[@]}")
                 fi
                 local mid_total=${#mid_candidates[@]}
@@ -1224,6 +1418,10 @@ get_risk_badge() {
         ipapi)
             # 处理百分比格式 (如 "2.34%", "0.73%", "0.10%", "5.2%") -> 转换为基点 bp (1% = 100 bp)
             local num_str="${raw%%%}"
+            # S-18: 严格校验为合法浮点或整数字符串，异常值直接退出，不误判为极低风险
+            if ! [[ "$num_str" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+                return
+            fi
             local bp=0
             if [[ "$num_str" =~ ^([0-9]+)\.?([0-9]*)$ ]]; then
                 local int_p="${BASH_REMATCH[1]}"
@@ -1336,6 +1534,11 @@ render_bar() {
     if [[ "$db" == "ipapi" ]]; then
         # ipapi 特殊处理: 百分比分值 & 三段式比例尺绘图
         local num_str="${raw%%%}"
+        # S-18: 严格校验为合法浮点或整数字符串，异常值直接显示无有效数据
+        if ! [[ "$num_str" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            printf "%-7s  %b\n" "$raw" "${C_GRAY}无有效数据${C_RESET}"
+            return
+        fi
         disp_score="${num_str}%"
         local bp=0
         if [[ "$num_str" =~ ^([0-9]+)\.?([0-9]*)$ ]]; then
@@ -1533,35 +1736,67 @@ render_risk_factor_history() {
     local full_engines=("IP2LOCATION" "ipapi" "ipregistry" "IPQS" "SCAMALYTICS" "ipdata" "IPinfo" "IPWHOIS" "DBIP")
     local factors=("Proxy" "Tor" "VPN" "Server" "Abuser" "Robot")
 
-    for fac in "${factors[@]}"; do
-        # 第一列固定 12 字符宽度对齐
+    # S-11: 批量提取各文件风险因子统计，避免内层循环数百次调用 jq
+    declare -A file_factor_det
+    declare -A file_factor_tot
+
+    for (( fi=0; fi<${#hist_files[@]}; fi++ )); do
+        local hf="${hist_files[fi]}"
+        local factor_summary
+        factor_summary=$(jq -r '
+            .Factor as $F |
+            ["Proxy", "Tor", "VPN", "Server", "Abuser", "Robot"] | map(
+                . as $fac |
+                [ "IP2LOCATION", "ipapi", "ipregistry", "IPQS", "SCAMALYTICS", "ipdata", "IPinfo", "IPWHOIS", "DBIP", "WHOIS" ] |
+                [
+                    map(select(($F[$fac][.] // false) == true or ($F[$fac][.] // false) == "true")) | length,
+                    map(select(($F[$fac][.] // null) != null)) | length
+                ] | "\(.[0])/\(.[1])"
+            ) | join("\u001f")
+        ' "$hf" 2>/dev/null)
+
+        local f_idx=0
+        local f_stats=()
+        IFS=$'\x1f' read -r -a f_stats <<< "$factor_summary"
+        for st in "${f_stats[@]}"; do
+            local det="${st%%/*}"
+            local tot="${st##*/}"
+            file_factor_det["${fi}_${f_idx}"]="${det:-0}"
+            file_factor_tot["${fi}_${f_idx}"]="${tot:-0}"
+            (( ++f_idx ))
+        done
+    done
+
+    for (( fac_i=0; fac_i<${#factors[@]}; fac_i++ )); do
+        local fac="${factors[fac_i]}"
         printf "  %-8s  " "$fac"
         local had_detection=false
-        for hf in "${hist_files[@]}"; do
-            local detected_count=0
-            local total_tested=0
-            for eng in "${full_engines[@]}"; do
-                local v
-                v=$(jq -r "if .Factor[\"$fac\"][\"$eng\"] != null then .Factor[\"$fac\"][\"$eng\"] else .Factor[\"$fac\"][\"WHOIS\"] end" "$hf" 2>/dev/null)
-                if [[ "$v" == "true" ]]; then
-                    detected_count=$((detected_count + 1))
-                    total_tested=$((total_tested + 1))
-                elif [[ "$v" == "false" ]]; then
-                    total_tested=$((total_tested + 1))
-                fi
-            done
-            if (( detected_count > 0 )); then
-                # 方案 A: 补齐空格使 ⚠️ 4/6 与 ✔ 安全 保持严格一致的 8 格宽度，完美对齐
+        local had_any_tested=false
+
+        for (( fi=0; fi<${#hist_files[@]}; fi++ )); do
+            local detected_count="${file_factor_det["${fi}_${fac_i}"]:-0}"
+            local total_tested="${file_factor_tot["${fi}_${fac_i}"]:-0}"
+
+            if (( total_tested == 0 )); then
+                # M-14: 无数据时不显示绿色的“安全”
+                printf "│ ${C_GRAY}无数据${C_RESET}  "
+            elif (( detected_count > 0 )); then
                 printf "│ ${C_RED}⚠️ %d/%d${C_RESET}  " "$detected_count" "$total_tested"
                 had_detection=true
+                had_any_tested=true
             else
                 printf "│ ${C_GREEN}✔ 安全${C_RESET} "
+                had_any_tested=true
             fi
         done
+
         if [[ "$had_detection" == "true" ]]; then
             printf "│  ${C_YELLOW}⚠️  曾有检出${C_RESET}\n"
-        else
+        elif [[ "$had_any_tested" == "true" ]]; then
             printf "│  ${C_GREEN}✅ 保持安全${C_RESET}\n"
+        else
+            # M-14: 全部无数据时显示暂无数据
+            printf "│  ${C_GRAY}⚪ 暂无数据${C_RESET}\n"
         fi
     done
     echo ""
@@ -1733,7 +1968,7 @@ render_mail_and_blacklist() {
 
     echo -e "${C_CYAN}${C_BOLD}▶ $target_proto 邮件连通性与 DNS 黑名单状态:${C_RESET}"
 
-    local latest_file="${files[-1]}"
+    local latest_file="${files[${#files[@]}-1]}"
     local p25_status
     p25_status=$(jq -r '.Mail.Port25 // "null"' "$latest_file")
     if [[ "$p25_status" == "true" ]]; then
@@ -1751,13 +1986,20 @@ render_mail_and_blacklist() {
     marked=$(jq -r '.Mail.DNSBlacklist.Marked // 0' "$latest_file")
     blacklisted=$(jq -r '.Mail.DNSBlacklist.Blacklisted // 0' "$latest_file")
 
-    local bl_status="${C_GREEN}全部干净通过 (0 拦截)${C_RESET}"
-    if (( blacklisted > 0 )); then
-        bl_status="${C_RED}检出 $blacklisted 个黑名单拦截！${C_RESET}"
-    elif (( marked > 0 )); then
-        bl_status="${C_YELLOW}检出 $marked 个可疑标记${C_RESET}"
+    local bl_status
+    if ! [[ "$total" =~ ^[0-9]+$ ]] || (( total == 0 )); then
+        bl_status="${C_GRAY}暂无检测数据${C_RESET}"
+        echo -e "  • 全局 DNS 黑名单概况 : $bl_status (共 0 个数据库)"
+    else
+        if (( blacklisted > 0 )); then
+            bl_status="${C_RED}检出 $blacklisted 个黑名单拦截！${C_RESET}"
+        elif (( marked > 0 )); then
+            bl_status="${C_YELLOW}检出 $marked 个可疑标记${C_RESET}"
+        else
+            bl_status="${C_GREEN}全部干净通过 (0 拦截)${C_RESET}"
+        fi
+        echo -e "  • 全局 DNS 黑名单概况 : $bl_status (共 $total 个数据库, 干净 $clean)"
     fi
-    echo -e "  • 全局 DNS 黑名单概况 : $bl_status (共 $total 个数据库, 干净 $clean)"
     echo ""
 
     # 12 邮局连通性历史表格
@@ -1839,15 +2081,21 @@ setup_cron() {
     current_cron=$(crontab -l 2>/dev/null | grep -E "ipqa(\.sh)? --cron" | head -n 1 || true)
 
     if [[ -n "$current_cron" ]]; then
-        local cur_sched
-        cur_sched=$(echo "$current_cron" | awk '{print $1,$2,$3,$4,$5}')
-        local friendly_name="$cur_sched"
-        if [[ "$cur_sched" == "0 $local_h * * *" ]]; then
-            friendly_name="每天一次 (北京时间 04:00)"
-        elif [[ "$cur_sched" == "0 $local_h */3 * *" ]]; then
-            friendly_name="每 3 天一次 (北京时间 04:00)"
-        elif [[ "$cur_sched" == "0 $local_h */7 * *" ]]; then
-            friendly_name="每 7 天一次 (北京时间 04:00)"
+        local friendly_name="自定义规则"
+        if [[ "$current_cron" =~ Asia/Shanghai.*date.*\+[%]H.*04 && "$current_cron" =~ %.*3 ]]; then
+            friendly_name="每 3 天一次 (北京时间 04:00，夏令时自适应)"
+        elif [[ "$current_cron" =~ Asia/Shanghai.*date.*\+[%]H.*04 && "$current_cron" =~ %u.*7 ]]; then
+            friendly_name="每 7 天一次 (北京时间 04:00，夏令时自适应)"
+        elif [[ "$current_cron" =~ Asia/Shanghai.*date.*\+[%]H.*04 ]]; then
+            friendly_name="每天一次 (北京时间 04:00，夏令时自适应)"
+        elif [[ "$current_cron" =~ ^0[[:space:]]+$local_h[[:space:]]+\*[[:space:]]+\*[[:space:]]+\* ]]; then
+            friendly_name="每天一次 (本机固定 $local_h:00)"
+        elif [[ "$current_cron" =~ ^0[[:space:]]+$local_h[[:space:]]+\*/3 ]]; then
+            friendly_name="每 3 天一次 (本机固定 $local_h:00)"
+        elif [[ "$current_cron" =~ ^0[[:space:]]+$local_h[[:space:]]+\*/7 ]]; then
+            friendly_name="每 7 天一次 (本机固定 $local_h:00)"
+        else
+            friendly_name=$(echo "$current_cron" | awk '{print $1,$2,$3,$4,$5}')
         fi
         echo -e "当前状态: ${C_GREEN}已启用自动检测${C_RESET} [${friendly_name}]"
         echo -e "当前规则: ${C_YELLOW}$current_cron${C_RESET}\n"
@@ -1856,9 +2104,9 @@ setup_cron() {
     fi
 
     echo -e "${C_BOLD}请选择定时检测周期:${C_RESET}"
-    echo -e "  [1] 每天检测一次     (北京时间 04:00 / 本机 $local_h:00) [推荐/默认]"
-    echo -e "  [2] 每 3 天检测一次  (北京时间 04:00 / 本机 $local_h:00)"
-    echo -e "  [3] 每 7 天检测一次  (北京时间 04:00 / 本机 $local_h:00)"
+    echo -e "  [1] 每天检测一次     (北京时间 04:00，自适应夏令时 / 本机约 $local_h:00) [推荐/默认]"
+    echo -e "  [2] 每 3 天检测一次  (北京时间 04:00，连续跨月计算)"
+    echo -e "  [3] 每 7 天检测一次  (北京时间 04:00，每周日执行)"
     echo -e "  [4] 自定义 Cron 表达式"
     echo -e "  [5] 关闭/移除定时检测"
     echo -e "  [0] 返回主菜单"
@@ -1867,39 +2115,6 @@ setup_cron() {
     read -r opt
     opt="${opt:-1}"
 
-    local new_cron_expr=""
-    case "$opt" in
-        1) new_cron_expr="0 $local_h * * *" ;;
-        2) new_cron_expr="0 $local_h */3 * *" ;;
-        3) new_cron_expr="0 $local_h */7 * *" ;;
-        4)
-            echo -ne "\n请输入 5 位 Cron 表达式 (如: 0 $local_h */5 * *): "
-            read -r new_cron_expr
-            ;;
-        5)
-            # 移除所有历史 IPQA cron (去重清理)
-            local remaining
-            remaining=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
-            if [[ -n "$remaining" ]]; then
-                echo "$remaining" | crontab -
-            else
-                crontab -r 2>/dev/null || true
-            fi
-            echo -e "\n${C_GREEN}已成功移除定时检测任务！${C_RESET}"
-            log_msg "INFO" "用户手动关闭了定时检测 cron 任务"
-            read -r -p "按回车键返回..."
-            return
-            ;;
-        0) return ;;
-        *) echo -e "${C_RED}无效选项${C_RESET}"; sleep 1; return ;;
-    esac
-
-    if [[ -z "$new_cron_expr" ]]; then
-        echo -e "${C_RED}Cron 表达式不能为空${C_RESET}"
-        sleep 1
-        return
-    fi
-
     # 确定脚本执行绝对路径
     local script_path
     script_path="$(command -v ipqa 2>/dev/null || echo "$IPQA_HOME/ipqa.sh")"
@@ -1907,20 +2122,91 @@ setup_cron() {
         script_path="$IPQA_HOME/ipqa.sh"
     fi
 
+    local cron_line=""
+    case "$opt" in
+        1)
+            cron_line="0 * * * * [ \"\$(TZ='Asia/Shanghai' date +\\%H)\" = \"04\" ] && \"$script_path\" --cron >> \"$LOG_FILE\" 2>&1"
+            ;;
+        2)
+            cron_line="0 * * * * [ \"\$(TZ='Asia/Shanghai' date +\\%H)\" = \"04\" ] && [ \$(( (\$(date +\\%s) / 86400) \\% 3 )) -eq 0 ] && \"$script_path\" --cron >> \"$LOG_FILE\" 2>&1"
+            ;;
+        3)
+            cron_line="0 * * * * [ \"\$(TZ='Asia/Shanghai' date +\\%H)\" = \"04\" ] && [ \"\$(TZ='Asia/Shanghai' date +\\%u)\" = \"7\" ] && \"$script_path\" --cron >> \"$LOG_FILE\" 2>&1"
+            ;;
+        4)
+            echo -ne "\n请输入 5 位标准 Cron 表达式 (如: 0 $local_h */5 * *): "
+            read -r new_cron_expr
+            if [[ -z "$new_cron_expr" ]]; then
+                echo -e "${C_RED}Cron 表达式不能为空${C_RESET}"
+                sleep 1
+                return
+            fi
+            local cron_fields=()
+            read -r -a cron_fields <<< "$new_cron_expr"
+            if [[ ${#cron_fields[@]} -ne 5 ]]; then
+                echo -e "\n${C_RED}错误: Cron 表达式必须包含 5 个时间字段 (分 时 日 月 周)${C_RESET}"
+                sleep 2
+                return
+            fi
+            for fld in "${cron_fields[@]}"; do
+                if [[ ! "$fld" =~ ^[0-9*\/,-]+$ ]]; then
+                    echo -e "\n${C_RED}错误: Cron 表达式包含非法字符: '$fld'${C_RESET}"
+                    sleep 2
+                    return
+                fi
+            done
+            cron_line="$new_cron_expr \"$script_path\" --cron >> \"$LOG_FILE\" 2>&1"
+            ;;
+        5)
+            # 移除所有历史 IPQA cron (去重清理)
+            local tmp_cron
+            tmp_cron=$(mktemp 2>/dev/null || echo "/tmp/ipqa_cron.$$.$RANDOM")
+            local remaining
+            remaining=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
+            if [[ -n "$remaining" ]]; then
+                echo "$remaining" > "$tmp_cron"
+                if crontab "$tmp_cron" 2>/dev/null; then
+                    echo -e "\n${C_GREEN}已成功移除定时检测任务！${C_RESET}"
+                    log_msg "INFO" "用户手动关闭了定时检测 cron 任务"
+                else
+                    echo -e "\n${C_RED}移除定时任务失败，请检查 crontab 权限${C_RESET}"
+                fi
+                rm -f "$tmp_cron"
+            else
+                crontab -r 2>/dev/null || true
+                echo -e "\n${C_GREEN}已成功移除定时检测任务！${C_RESET}"
+                log_msg "INFO" "用户手动关闭了定时检测 cron 任务"
+            fi
+            read -r -p "按回车键返回..."
+            return
+            ;;
+        0) return ;;
+        *) echo -e "${C_RED}无效选项${C_RESET}"; sleep 1; return ;;
+    esac
+
     # 清理旧的 IPQA cron 进行严格去重，再追加新配置
     local existing_cron
     existing_cron=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
 
+    local tmp_cron
+    tmp_cron=$(mktemp 2>/dev/null || echo "/tmp/ipqa_cron.$$.$RANDOM")
     {
         [[ -n "$existing_cron" ]] && echo "$existing_cron"
         echo "# IPQA AUTO CHECK - DO NOT EDIT MANUALLY"
-        echo "$new_cron_expr $script_path --cron >> $LOG_FILE 2>&1"
-    } | crontab -
+        echo "$cron_line"
+    } > "$tmp_cron"
 
-    echo -e "\n${C_GREEN}✔ 定时检测配置成功！${C_RESET}"
-    echo -e "设定规则: ${C_CYAN}$new_cron_expr $script_path --cron${C_RESET}"
-    echo -e "执行周期: ${C_YELLOW}北京时间凌晨 04:00 (本机服务器时间 $local_h:00)${C_RESET}\n"
-    log_msg "INFO" "配置定时任务: $new_cron_expr (北京时间 04:00 对应本机 $local_h:00)"
+    if crontab "$tmp_cron" 2>/dev/null; then
+        rm -f "$tmp_cron"
+        echo -e "\n${C_GREEN}✔ 定时检测配置成功！${C_RESET}"
+        echo -e "设定规则: ${C_CYAN}$cron_line${C_RESET}"
+        echo -e "执行周期: ${C_YELLOW}北京时间凌晨 04:00 (自动适应夏令时与服务器时区)${C_RESET}\n"
+        log_msg "INFO" "配置定时任务: $cron_line"
+    else
+        rm -f "$tmp_cron"
+        echo -e "\n${C_RED}✗ 定时检测配置失败: 写入 crontab 时出错，请检查系统 crontab 权限${C_RESET}\n"
+        log_msg "ERROR" "配置定时任务失败: $cron_line"
+    fi
     read -r -p "按回车键返回..."
 }
 
@@ -1933,7 +2219,7 @@ render_single_archive_card() {
     [[ ! -f "$f" ]] && return
 
     local ip asn org city country ip_type
-    IFS=$'\t' read -r ip asn org city country ip_type < <(
+    IFS=$'\x1f' read -r ip asn org city country ip_type < <(
         jq -r '[
             (.Head.IP // "未知"),
             (.Info.ASN // "--"),
@@ -1941,7 +2227,7 @@ render_single_archive_card() {
             (.Info.City.Name // ""),
             (.Info.Region.Name // ""),
             (.Info.Type // "--")
-        ] | @tsv' "$f" 2>/dev/null
+        ] | join("\u001f")' "$f" 2>/dev/null
     )
     [[ "$asn" =~ ^[0-9]+$ ]] && asn="AS$asn"
     [[ "$city" == "null" ]] && city=""
@@ -1975,15 +2261,15 @@ render_single_archive_card() {
     type_data=$(jq -r '
         .Type as $t |
         [
-            ("IPinfo\t" + ($t.Usage.IPinfo // "") + "\t" + ($t.Company.IPinfo // "")),
-            ("ipregistry\t" + ($t.Usage.ipregistry // "") + "\t" + ($t.Company.ipregistry // "")),
-            ("ipapi\t" + ($t.Usage.ipapi // "") + "\t" + ($t.Company.ipapi // "")),
-            ("IP2Location\t" + ($t.Usage.IP2LOCATION // $t.Usage.IP2Location // "") + "\t" + ($t.Company.IP2LOCATION // $t.Company.IP2Location // "")),
-            ("AbuseIPDB\t" + ($t.Usage.AbuseIPDB // "") + "\t" + ($t.Company.AbuseIPDB // ""))
-        ] | .[]
+            ["IPinfo", ($t.Usage.IPinfo // ""), ($t.Company.IPinfo // "")],
+            ["ipregistry", ($t.Usage.ipregistry // ""), ($t.Company.ipregistry // "")],
+            ["ipapi", ($t.Usage.ipapi // ""), ($t.Company.ipapi // "")],
+            ["IP2Location", ($t.Usage.IP2LOCATION // $t.Usage.IP2Location // ""), ($t.Company.IP2LOCATION // $t.Company.IP2Location // "")],
+            ["AbuseIPDB", ($t.Usage.AbuseIPDB // ""), ($t.Company.AbuseIPDB // "")]
+        ] | .[] | join("\u001f")
     ' "$f" 2>/dev/null)
 
-    while IFS=$'\t' read -r tdb u c; do
+    while IFS=$'\x1f' read -r tdb u c; do
         [[ -z "$tdb" ]] && continue
         [[ "$u" == "null" || "$u" == "--" ]] && u=""
         [[ "$c" == "null" || "$c" == "--" ]] && c=""
@@ -2037,10 +2323,10 @@ render_single_archive_card() {
     score_data=$(jq -r '
         .Score as $s |
         ["SCAMALYTICS", "IP2LOCATION", "AbuseIPDB", "IPQS", "ipapi", "DBIP"] | map(
-            . as $k | "\($k)\t\($s[$k] // "")"
+            . as $k | [$k, ($s[$k] // "")] | join("\u001f")
         ) | .[]
     ' "$f" 2>/dev/null)
-    while IFS=$'\t' read -r sdb sc; do
+    while IFS=$'\x1f' read -r sdb sc; do
         [[ -z "$sc" || "$sc" == "null" ]] && continue
         local chk
         chk=$(normalize_score "$sc")
@@ -2054,7 +2340,7 @@ render_single_archive_card() {
         echo -e "    ${C_GRAY}• 暂无各权威数据库有效风控评分数据${C_RESET}"
     fi
 
-    # 风险因子 (一次性提取 6 大安全因子检出状态)
+    # 风险因子 (一次性提取 6 大安全因子检出状态，支持无数据检测)
     echo -e "  ${C_GRAY}── 🔬 核心安全因子 ─────────────────────────────────────────────────${C_RESET}"
     local factor_line="   "
     local factor_data
@@ -2062,15 +2348,17 @@ render_single_archive_card() {
         .Factor as $f |
         ["Proxy", "Tor", "VPN", "Server", "Abuser", "Robot"] | map(
             . as $fac |
-            "\($fac)\t\([ "IP2LOCATION", "ipapi", "ipregistry", "IPQS", "SCAMALYTICS", "ipdata", "IPinfo", "IPWHOIS", "DBIP", "WHOIS" ] | any(
-                . as $eng |
-                ($f[$fac][$eng] // false) == true or ($f[$fac][$eng] // false) == "true"
-            ))"
+            [ "IP2LOCATION", "ipapi", "ipregistry", "IPQS", "SCAMALYTICS", "ipdata", "IPinfo", "IPWHOIS", "DBIP", "WHOIS" ] as $engs |
+            ($engs | map(select($f[$fac][.] != null and $f[$fac][.] != "--" and $f[$fac][.] != "")) | length) as $tested |
+            ($engs | any(($f[$fac][.] // false) == true or ($f[$fac][.] // false) == "true")) as $is_det |
+            [$fac, ($tested|tostring), ($is_det|tostring)] | join("\u001f")
         ) | .[]
     ' "$f" 2>/dev/null)
-    while IFS=$'\t' read -r fac is_detected; do
+    while IFS=$'\x1f' read -r fac tested is_detected; do
         [[ -z "$fac" ]] && continue
-        if [[ "$is_detected" == "true" ]]; then
+        if [[ "$tested" -eq 0 ]]; then
+            factor_line+=" ${fac}: ${C_GRAY}● 无数据${C_RESET}  "
+        elif [[ "$is_detected" == "true" ]]; then
             factor_line+=" ${fac}: ${C_RED}● 检出${C_RESET}  "
         else
             factor_line+=" ${fac}: ${C_GREEN}● 正常${C_RESET}  "
@@ -2084,17 +2372,17 @@ render_single_archive_card() {
     media_data=$(jq -r '
         .Media as $m |
         [
-            ("Youtube\tYouTube\t" + ($m.Youtube.Status // "未知") + "\t" + ($m.Youtube.Region // "") + "\t" + ($m.Youtube.Type // "")),
-            ("Netflix\tNetflix\t" + ($m.Netflix.Status // "未知") + "\t" + ($m.Netflix.Region // "") + "\t" + ($m.Netflix.Type // "")),
-            ("DisneyPlus\tDisney+\t" + ($m.DisneyPlus.Status // "未知") + "\t" + ($m.DisneyPlus.Region // "") + "\t" + ($m.DisneyPlus.Type // "")),
-            ("TikTok\tTikTok\t" + ($m.TikTok.Status // "未知") + "\t" + ($m.TikTok.Region // "") + "\t" + ($m.TikTok.Type // "")),
-            ("AmazonPrimeVideo\tAmazonPV\t" + ($m.AmazonPrimeVideo.Status // $m.AmazonPV.Status // "未知") + "\t" + ($m.AmazonPrimeVideo.Region // $m.AmazonPV.Region // "") + "\t" + ($m.AmazonPrimeVideo.Type // $m.AmazonPV.Type // "")),
-            ("ChatGPT\tChatGPT\t" + ($m.ChatGPT.Status // "未知") + "\t" + ($m.ChatGPT.Region // "") + "\t" + ($m.ChatGPT.Type // "")),
-            ("Reddit\tReddit\t" + ($m.Reddit.Status // "未知") + "\t" + ($m.Reddit.Region // "") + "\t" + ($m.Reddit.Type // ""))
-        ] | .[]
+            ["Youtube", "YouTube", ($m.Youtube.Status // "未知"), ($m.Youtube.Region // ""), ($m.Youtube.Type // "")],
+            ["Netflix", "Netflix", ($m.Netflix.Status // "未知"), ($m.Netflix.Region // ""), ($m.Netflix.Type // "")],
+            ["DisneyPlus", "Disney+", ($m.DisneyPlus.Status // "未知"), ($m.DisneyPlus.Region // ""), ($m.DisneyPlus.Type // "")],
+            ["TikTok", "TikTok", ($m.TikTok.Status // "未知"), ($m.TikTok.Region // ""), ($m.TikTok.Type // "")],
+            ["AmazonPrimeVideo", "AmazonPV", ($m.AmazonPrimeVideo.Status // $m.AmazonPV.Status // "未知"), ($m.AmazonPrimeVideo.Region // $m.AmazonPV.Region // ""), ($m.AmazonPrimeVideo.Type // $m.AmazonPV.Type // "")],
+            ["ChatGPT", "ChatGPT", ($m.ChatGPT.Status // "未知"), ($m.ChatGPT.Region // ""), ($m.ChatGPT.Type // "")],
+            ["Reddit", "Reddit", ($m.Reddit.Status // "未知"), ($m.Reddit.Region // ""), ($m.Reddit.Type // "")]
+        ] | .[] | join("\u001f")
     ' "$f" 2>/dev/null)
 
-    while IFS=$'\t' read -r m_key m_name st reg m_type; do
+    while IFS=$'\x1f' read -r m_key m_name st reg m_type; do
         [[ -z "$m_key" ]] && continue
         [[ "$reg" == "null" ]] && reg=""
         [[ "$m_type" == "null" ]] && m_type=""
@@ -2148,12 +2436,12 @@ render_single_archive_card() {
     # 邮件与 DNS 黑名单
     echo -e "  ${C_GRAY}── 📬 邮件连通与 DNS 黑名单 ─────────────────────────────────────────${C_RESET}"
     local p25 bl_total bl_blk
-    IFS=$'\t' read -r p25 bl_total bl_blk < <(
+    IFS=$'\x1f' read -r p25 bl_total bl_blk < <(
         jq -r '[
             (.Mail.Port25 // "null"),
             (.Mail.DNSBlacklist.Total // 0),
             (.Mail.DNSBlacklist.Blacklisted // 0)
-        ] | @tsv' "$f" 2>/dev/null
+        ] | join("\u001f")' "$f" 2>/dev/null
     )
     if [[ "$p25" == "true" ]]; then
         echo -e "    • 25 端口出站 (Port 25): ${C_GREEN}✓ 开放${C_RESET}"
@@ -2163,7 +2451,9 @@ render_single_archive_card() {
         echo -e "    • 25 端口出站 (Port 25): ${C_GRAY}未检出${C_RESET}"
     fi
 
-    if (( bl_blk == 0 )); then
+    if ! [[ "$bl_total" =~ ^[0-9]+$ ]] || (( bl_total == 0 )); then
+        echo -e "    • DNS 黑名单拦截       : ${C_GRAY}暂无检测数据 (0 数据库)${C_RESET}"
+    elif (( bl_blk == 0 )); then
         echo -e "    • DNS 黑名单拦截       : ${C_GREEN}0 / $bl_total 数据库 (全部干净通过)${C_RESET}"
     else
         echo -e "    • DNS 黑名单拦截       : ${C_RED}$bl_blk / $bl_total 数据库检出拦截！${C_RESET}"
@@ -2178,17 +2468,46 @@ find_matching_v6() {
         echo "$direct"
         return
     fi
+    [[ ! -d "$V6_DIR" ]] && return
+
+    # 将 target_ts (YYYY-MM-DD_HH-MM-SS) 转换为时间戳进行近邻匹配 (阈值 300 秒)
+    local t_date="${target_ts%%_*}"
+    local t_time="${target_ts#*_}"
+    t_time="${t_time//-/:}"
+    local target_epoch=0
+    target_epoch=$(date -d "$t_date $t_time" +%s 2>/dev/null || echo 0)
+
+    local best_file=""
+    local min_diff=999999
+
     for f6 in "$V6_DIR"/*.json; do
         [[ ! -f "$f6" ]] && continue
         local fn6
         fn6=$(basename "$f6" .json)
-        # 简单比对前 13 个字符 (YYYY-MM-DD_HH)
-        if [[ "${fn6:0:13}" == "${target_ts:0:13}" ]]; then
+        if [[ "$fn6" == "$target_ts" ]]; then
             echo "$f6"
             return
         fi
+        if (( target_epoch > 0 )); then
+            local f6_date="${fn6%%_*}"
+            local f6_time="${fn6#*_}"
+            f6_time="${f6_time//-/:}"
+            local f6_epoch=0
+            f6_epoch=$(date -d "$f6_date $f6_time" +%s 2>/dev/null || echo 0)
+            if (( f6_epoch > 0 )); then
+                local diff=$(( f6_epoch - target_epoch ))
+                (( diff < 0 )) && diff=$(( -diff ))
+                if (( diff <= 300 && diff < min_diff )); then
+                    min_diff=$diff
+                    best_file="$f6"
+                fi
+            fi
+        fi
     done
-    echo ""
+
+    if [[ -n "$best_file" ]]; then
+        echo "$best_file"
+    fi
 }
 
 render_archive_snapshot() {
@@ -2468,28 +2787,45 @@ cleanup_data() {
     read -r c_opt
 
     case "$c_opt" in
-        1)
-            find "$V4_DIR" "$V6_DIR" -type f -name "*.json" -mtime +30 -delete 2>/dev/null
-            echo -e "\n${C_GREEN}已清理 30 天前的数据！${C_RESET}"
-            ;;
-        2)
-            find "$V4_DIR" "$V6_DIR" -type f -name "*.json" -mtime +90 -delete 2>/dev/null
-            echo -e "\n${C_GREEN}已清理 90 天前的数据！${C_RESET}"
-            ;;
-        3)
-            find "$V4_DIR" "$V6_DIR" -type f -name "*.json" -mtime +180 -delete 2>/dev/null
-            echo -e "\n${C_GREEN}已清理 180 天前的数据！${C_RESET}"
+        1|2|3)
+            local days=30
+            [[ "$c_opt" == "2" ]] && days=90
+            [[ "$c_opt" == "3" ]] && days=180
+            local cutoff
+            cutoff=$(date -d "$days days ago" +%Y-%m-%d 2>/dev/null || date -d "@$(( $(date +%s) - days*86400 ))" +%Y-%m-%d 2>/dev/null)
+            local del_cnt=0
+            for d in "$V4_DIR" "$V6_DIR"; do
+                [[ ! -d "$d" ]] && continue
+                for f in "$d"/*.json; do
+                    [[ ! -f "$f" ]] && continue
+                    local base
+                    base=$(basename "$f" .json)
+                    if [[ "${base:0:10}" < "$cutoff" ]]; then
+                        rm -f "$f"
+                        (( ++del_cnt ))
+                    fi
+                done
+            done
+            echo -e "\n${C_GREEN}已清理 $days 天前 (早于 $cutoff) 的旧存档数据 (共清理 $del_cnt 份)！${C_RESET}"
             ;;
         4)
             echo -ne "请输入保留的存档份数: "
             read -r keep_num
             if [[ "$keep_num" =~ ^[0-9]+$ ]] && (( keep_num > 0 )); then
                 for d in "$V4_DIR" "$V6_DIR"; do
-                    local total
-                    total=$(count_json_files "$d")
+                    [[ ! -d "$d" ]] && continue
+                    local all_f=()
+                    for f in "$d"/*.json; do
+                        [[ -f "$f" ]] && all_f+=("$f")
+                    done
+                    local total=${#all_f[@]}
                     if (( total > keep_num )); then
+                        local sorted_f=()
+                        mapfile -t sorted_f < <(printf "%s\n" "${all_f[@]}" | sort)
                         local diff=$((total - keep_num))
-                        find "$d" -maxdepth 1 -name '*.json' 2>/dev/null | sort | head -n "$diff" | xargs rm -f 2>/dev/null
+                        for (( k=0; k<diff; k++ )); do
+                            rm -f "${sorted_f[$k]}"
+                        done
                     fi
                 done
                 echo -e "\n${C_GREEN}已保留最近 $keep_num 份存档，清理完成！${C_RESET}"
@@ -2534,10 +2870,14 @@ uninstall_ipqa() {
     fi
 
     echo -e "\n${C_CYAN}▶ [1/3] 正在清理定时任务...${C_RESET}"
+    local tmp_cron
+    tmp_cron=$(mktemp 2>/dev/null || echo "/tmp/ipqa_cron.$$.$RANDOM")
     local remaining
     remaining=$(crontab -l 2>/dev/null | grep -vE "ipqa(\.sh)? --cron" | grep -v "# IPQA AUTO CHECK" || true)
     if [[ -n "$remaining" ]]; then
-        echo "$remaining" | crontab -
+        echo "$remaining" > "$tmp_cron"
+        crontab "$tmp_cron" 2>/dev/null || true
+        rm -f "$tmp_cron"
     else
         crontab -r 2>/dev/null || true
     fi
@@ -2546,9 +2886,18 @@ uninstall_ipqa() {
     echo -e "\n${C_CYAN}▶ [2/3] 正在删除全局命令软链接...${C_RESET}"
     local links=("/usr/local/bin/ipqa" "$HOME/.local/bin/ipqa" "$HOME/bin/ipqa")
     for link in "${links[@]}"; do
-        if [[ -L "$link" || -f "$link" ]]; then
-            rm -f "$link" 2>/dev/null || sudo rm -f "$link" 2>/dev/null || true
-            echo -e "${C_GREEN}✔ 已删除 $link${C_RESET}"
+        if [[ -L "$link" ]]; then
+            local target
+            target=$(readlink "$link" 2>/dev/null || true)
+            if [[ "$target" == *ipqa* || -z "$target" ]]; then
+                rm -f "$link" 2>/dev/null || sudo rm -f "$link" 2>/dev/null || true
+                echo -e "${C_GREEN}✔ 已删除软链接 $link${C_RESET}"
+            fi
+        elif [[ -f "$link" ]]; then
+            if grep -q "IPQA" "$link" 2>/dev/null; then
+                rm -f "$link" 2>/dev/null || sudo rm -f "$link" 2>/dev/null || true
+                echo -e "${C_GREEN}✔ 已删除快捷脚本 $link${C_RESET}"
+            fi
         fi
     done
 
@@ -2556,8 +2905,12 @@ uninstall_ipqa() {
     echo -ne "${C_YELLOW}是否删除所有历史检测存档与配置 ($IPQA_HOME)? [y/N]: ${C_RESET}"
     read -r rm_data
     if [[ "$rm_data" == "y" || "$rm_data" == "Y" ]]; then
-        rm -rf "$IPQA_HOME"
-        echo -e "${C_GREEN}✔ 已彻底删除 $IPQA_HOME${C_RESET}"
+        if is_dangerous_path "$IPQA_HOME"; then
+            echo -e "${C_RED}错误: IPQA_HOME 路径 ($IPQA_HOME) 属于危险系统路径，已拒绝删除！${C_RESET}"
+        else
+            rm -rf "$IPQA_HOME"
+            echo -e "${C_GREEN}✔ 已彻底删除 $IPQA_HOME${C_RESET}"
+        fi
     else
         echo -e "${C_GRAY}ℹ️ 已保留历史存档与配置目录: $IPQA_HOME${C_RESET}"
     fi
@@ -2572,41 +2925,72 @@ uninstall_ipqa() {
 update_ipqa() {
     clear
     print_module_header "🔄 在线更新 IPQA 系统与检测核心"
-    echo -e "${C_CYAN}正在检查并下载 IPQA 主程序最新版本...${C_RESET}"
-    local tmp_file="$IPQA_HOME/ipqa.sh.tmp"
-    if curl -sL -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh?t=$(date +%s)" -o "$tmp_file"; then
-        if bash -n "$tmp_file" 2>/dev/null; then
-            mv "$tmp_file" "$IPQA_HOME/ipqa.sh"
-            sed -i 's/\r$//' "$IPQA_HOME/ipqa.sh" 2>/dev/null || true
-            chmod +x "$IPQA_HOME/ipqa.sh"
-            echo -e "${C_GREEN}✔ IPQA 主程序已更新至最新版本${C_RESET}"
-        else
-            rm -f "$tmp_file"
-            echo -e "${C_RED}错误: 下载的主程序脚本校验失败${C_RESET}\n"
-            exit 1
-        fi
-    else
-        echo -e "${C_RED}错误: 无法连接 GitHub 下载主程序，请检查网络${C_RESET}\n"
+
+    if ! acquire_lock "ipqa_update"; then
+        echo -e "${C_YELLOW}⚠ 另有 IPQA 检测或更新任务正在运行中，已取消当前更新操作。${C_RESET}\n"
         exit 1
     fi
 
+    echo -e "${C_CYAN}正在检查并下载 IPQA 主程序最新版本...${C_RESET}"
+    local tmp_file="$IPQA_HOME/ipqa.sh.tmp.$$.$RANDOM"
+    local main_ok=false
+
+    if curl -fsSL --connect-timeout 10 --max-time 60 -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh?t=$(date +%s)" -o "$tmp_file" 2>/dev/null; then
+        local sz
+        sz=$(wc -c < "$tmp_file" 2>/dev/null || echo 0)
+        if (( sz > 10000 )) && bash -n "$tmp_file" 2>/dev/null; then
+            mv "$tmp_file" "$IPQA_HOME/ipqa.sh"
+            sed -i 's/\r$//' "$IPQA_HOME/ipqa.sh" 2>/dev/null || true
+            chmod 755 "$IPQA_HOME/ipqa.sh" 2>/dev/null || chmod +x "$IPQA_HOME/ipqa.sh"
+            echo -e "${C_GREEN}✔ IPQA 主程序已更新至最新版本${C_RESET}"
+            main_ok=true
+        else
+            rm -f "$tmp_file"
+            echo -e "${C_RED}错误: 下载的主程序脚本校验失败 (语法错误或内容不完整)${C_RESET}\n"
+        fi
+    else
+        rm -f "$tmp_file"
+        echo -e "${C_RED}错误: 无法连接 GitHub 下载主程序，请检查网络${C_RESET}\n"
+    fi
+
     echo -e "\n${C_CYAN}正在同步 IPQuality 检测核心最新版本...${C_RESET}"
-    local tmp_core="$IPQA_HOME/ip.sh.tmp"
-    if curl -sL https://IP.Check.Place -o "$tmp_core" 2>/dev/null || curl -sL https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_core" 2>/dev/null; then
-        mv "$tmp_core" "$IP_SCRIPT"
-        sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
-        chmod +x "$IP_SCRIPT"
-        patch_ip_script
-        date +%s > "$IPQA_HOME/.last_auto_update" 2>/dev/null || true
-        rm -f "$IPQA_HOME/.last_core_update" 2>/dev/null || true
-        echo -e "${C_GREEN}✔ IPQuality 检测核心已成功同步至最新版本！${C_RESET}"
+    local tmp_core="$IPQA_HOME/ip.sh.tmp.$$.$RANDOM"
+    local core_ok=false
+
+    if curl -fsSL --connect-timeout 10 --max-time 60 https://IP.Check.Place -o "$tmp_core" 2>/dev/null || \
+       curl -fsSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_core" 2>/dev/null; then
+        local csz
+        csz=$(wc -c < "$tmp_core" 2>/dev/null || echo 0)
+        if (( csz > 5000 )) && grep -q -E '(script_version|IP\.Check\.Place)' "$tmp_core" 2>/dev/null; then
+            mv "$tmp_core" "$IP_SCRIPT"
+            sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
+            chmod 755 "$IP_SCRIPT" 2>/dev/null || chmod +x "$IP_SCRIPT"
+            patch_ip_script
+            date +%s > "$IPQA_HOME/.last_auto_update" 2>/dev/null || true
+            rm -f "$IPQA_HOME/.last_core_update" 2>/dev/null || true
+            echo -e "${C_GREEN}✔ IPQuality 检测核心已成功同步至最新版本！${C_RESET}"
+            core_ok=true
+        else
+            rm -f "$tmp_core"
+            echo -e "${C_YELLOW}⚠ 检测核心内容不完整，已保留本地版本${C_RESET}"
+        fi
     else
         rm -f "$tmp_core"
         echo -e "${C_YELLOW}⚠ 检测核心下载超时，已保留本地版本${C_RESET}"
     fi
 
-    echo -e "\n${C_GREEN}${C_BOLD}🎉 IPQA 系统及检测核心已全部更新完成！${C_RESET}\n"
-    exit 0
+    release_lock "ipqa_update"
+
+    if [[ "$main_ok" == "true" && "$core_ok" == "true" ]]; then
+        echo -e "\n${C_GREEN}${C_BOLD}🎉 IPQA 系统及检测核心已全部更新完成！${C_RESET}\n"
+        exit 0
+    elif [[ "$main_ok" == "true" ]]; then
+        echo -e "\n${C_YELLOW}${C_BOLD}✔ IPQA 主程序已更新完成，检测核心保持现有版本。${C_RESET}\n"
+        exit 0
+    else
+        echo -e "\n${C_RED}${C_BOLD}✗ 更新失败，未更改本地脚本。${C_RESET}\n"
+        exit 1
+    fi
 }
 
 # ==============================================================================
@@ -2688,14 +3072,14 @@ show_status() {
 
     local ref_archive="${latest_v4:-$latest_v6}"
     if [[ -n "$ref_archive" ]]; then
-        IFS=$'\t' read -r ref_ip asn org city country < <(
+        IFS=$'\x1f' read -r ref_ip asn org city country < <(
             jq -r '[
                 (.Head.IP // "未知"),
                 (.Info.ASN // "--"),
                 (.Info.Organization // "--"),
                 (.Info.City.Name // ""),
                 (.Info.Region.Name // "")
-            ] | @tsv' "$ref_archive" 2>/dev/null
+            ] | join("\u001f")' "$ref_archive" 2>/dev/null
         )
         [[ "$city" == "null" ]] && city=""
         [[ "$country" == "null" ]] && country=""
@@ -2722,14 +3106,9 @@ show_status() {
     count_v4=$(count_json_files "$V4_DIR")
     count_v6=$(count_json_files "$V6_DIR")
 
-    local oldest_file latest_file time_span="--"
-    oldest_file=$(find "$V4_DIR" "$V6_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort | head -n 1)
+    local latest_file
     latest_file=$(find "$V4_DIR" "$V6_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort -r | head -n 1)
-    if [[ -n "$oldest_file" && -n "$latest_file" ]]; then
-        local d1 d2
-        d1=$(fmt_short_date "$(basename "$oldest_file" .json)")
-        d2=$(fmt_short_date "$(basename "$latest_file" .json)")
-        time_span="$d1 ~ $d2"
+    if [[ -n "$latest_file" ]]; then
         last_check=$(fmt_timestamp "$(basename "$latest_file" .json)")
     fi
 
@@ -2838,8 +3217,29 @@ show_status() {
         mapfile -t matched_alerts < <(grep -E "$pattern" "$ALERT_LOG" 2>/dev/null | grep -v "首次完成数据存档监测" | sort -t'|' -k1 -r)
     fi
 
-    if (( ${#matched_alerts[@]} == 0 )); then
-        echo -e "  • 近三日无任何风险变化提醒记录，IP 质量状态保持稳定"
+    if (( count_v4 + count_v6 == 0 )); then
+        echo -e "  • 暂无任何历史检测存档数据"
+    elif (( ${#matched_alerts[@]} == 0 )); then
+        local recent_archives=0
+        for d in "$V4_DIR" "$V6_DIR"; do
+            [[ ! -d "$d" ]] && continue
+            for f in "$d"/*.json; do
+                [[ ! -f "$f" ]] && continue
+                local b
+                b=$(basename "$f" | cut -d'_' -f1)
+                for td in "${target_dates[@]}"; do
+                    if [[ "$b" == "$td" ]]; then
+                        (( ++recent_archives ))
+                        break
+                    fi
+                done
+            done
+        done
+        if (( recent_archives == 0 )); then
+            echo -e "  • 近三日无检测记录 (历史检测保持原有状态)"
+        else
+            echo -e "  • 近三日无任何风险变化提醒记录，各数据库及流媒体状态稳定良好"
+        fi
     else
         local i=1
         for alt in "${matched_alerts[@]}"; do
@@ -2895,14 +3295,14 @@ render_panel() {
     local last_check="从无检测记录"
 
     if [[ -n "$latest_v4" ]]; then
-        IFS=$'\t' read -r ip_v4 asn org city country < <(
+        IFS=$'\x1f' read -r ip_v4 asn org city country < <(
             jq -r '[
                 (.Head.IP // "未知"),
                 (.Info.ASN // "--"),
                 (.Info.Organization // "--"),
                 (.Info.City.Name // ""),
                 (.Info.Region.Name // "")
-            ] | @tsv' "$latest_v4" 2>/dev/null
+            ] | join("\u001f")' "$latest_v4" 2>/dev/null
         )
         [[ "$city" == "null" ]] && city=""
         [[ "$country" == "null" ]] && country=""
@@ -2922,19 +3322,10 @@ render_panel() {
         ip_v6=$(jq -r '.Head.IP // "无"' "$latest_v6" 2>/dev/null)
     fi
 
-    # 统计数量与时间跨度
+    # 统计数量
     local count_v4 count_v6
     count_v4=$(count_json_files "$V4_DIR")
     count_v6=$(count_json_files "$V6_DIR")
-
-    local oldest_file time_span="--"
-    oldest_file=$(find "$V4_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort | head -n 1)
-    if [[ -n "$oldest_file" && -n "$latest_v4" ]]; then
-        local d1 d2
-        d1=$(fmt_short_date "$(basename "$oldest_file" .json)")
-        d2=$(fmt_short_date "$(basename "$latest_v4" .json)")
-        time_span="$d1 ~ $d2"
-    fi
 
     # 定时检测状态 (提取执行周期并显示友好名称)
     local cron_status="未开启"
@@ -3050,6 +3441,7 @@ case "$1" in
             [[ "$arg" == "--no-auto-update" || "$arg" == "--disable-auto-update" ]] && OVERRIDE_AUTO_UPDATE_SCRIPT="false"
         done
         run_check true
+        exit $?
         ;;
     --check)
         check_dependencies
@@ -3057,6 +3449,7 @@ case "$1" in
             [[ "$arg" == "--no-auto-update" || "$arg" == "--disable-auto-update" ]] && OVERRIDE_AUTO_UPDATE_SCRIPT="false"
         done
         run_check false
+        exit $?
         ;;
     --enable-auto-update|enable-auto-update)
         check_dependencies
@@ -3078,9 +3471,11 @@ case "$1" in
         if [[ "$2" == "--cron" ]]; then
             check_dependencies
             run_check true
+            exit $?
         elif [[ "$2" == "--check" ]]; then
             check_dependencies
             run_check false
+            exit $?
         else
             check_dependencies
             set_auto_update "disable"
@@ -3110,10 +3505,74 @@ case "$1" in
         echo "  --enable-auto-update    启用每日自动同步更新 IPQA 脚本本身 (默认开启)"
         echo "  --disable-auto-update   禁用每日自动同步更新 IPQA 脚本本身 (保留本地修改与版本)"
         echo "  --auto-update           查看当前脚本自身自动更新状态"
+        echo "  --test                  运行系统环境、依赖与配置健康自检"
         echo "  --uninstall             干净卸载 IPQA 并清理任务与软链接"
         echo "  --help, -h              显示本帮助信息"
         ;;
     --test)
+        echo "正在执行 IPQA 系统自检测试..."
+        pass=true
+        echo -ne "  [1/5] 核心依赖检查 (bash, jq, curl): "
+        missing=()
+        for cmd in bash jq curl; do
+            command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+        done
+        if [[ ${#missing[@]} -eq 0 ]]; then
+            if command -v crontab >/dev/null 2>&1; then
+                echo "通过 (含 crontab)"
+            else
+                echo "通过 (提示: 未检出 crontab，定时检测功能将受限)"
+            fi
+        else
+            echo "缺失核心依赖 (${missing[*]})"
+            pass=false
+        fi
+
+        echo -ne "  [2/5] 目录与配置检查: "
+        if [[ -d "$V4_DIR" && -d "$V6_DIR" && -f "$CONFIG_FILE" ]]; then
+            echo "通过"
+        else
+            echo "已就绪"
+            mkdir -p "$V4_DIR" "$V6_DIR" "$IPQA_HOME/logs" 2>/dev/null || true
+            [[ ! -f "$CONFIG_FILE" ]] && save_config
+        fi
+
+        echo -ne "  [3/5] 检测核心检查 ($IP_SCRIPT): "
+        if [[ -f "$IP_SCRIPT" && -s "$IP_SCRIPT" ]]; then
+            if bash -n "$IP_SCRIPT" 2>/dev/null; then
+                echo "通过"
+            else
+                echo "语法校验异常"
+                pass=false
+            fi
+        else
+            echo "未下载 (首次检测时将自动同步)"
+        fi
+
+        echo -ne "  [4/5] 锁与日志机制检查: "
+        if acquire_lock "test_lock"; then
+            release_lock "test_lock"
+            echo "通过"
+        else
+            echo "锁机制异常"
+            pass=false
+        fi
+
+        echo -ne "  [5/5] 数据解析与 JSON 支持检查: "
+        if echo '{"test":"ok"}' | jq -e '.test == "ok"' >/dev/null 2>&1; then
+            echo "通过"
+        else
+            echo "jq JSON 解析异常"
+            pass=false
+        fi
+
+        if [[ "$pass" == "true" ]]; then
+            echo -e "\n自检结果: 全部通过，IPQA 运行环境健康。"
+            exit 0
+        else
+            echo -e "\n自检结果: 存在异常，请根据上方提示排查。"
+            exit 1
+        fi
         ;;
     "")
         main_loop

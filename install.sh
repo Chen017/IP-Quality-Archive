@@ -12,7 +12,6 @@ C_BOLD="\033[1m"
 C_RED="\033[31m"
 C_GREEN="\033[32m"
 C_YELLOW="\033[33m"
-C_BLUE="\033[34m"
 C_CYAN="\033[36m"
 C_GRAY="\033[90m"
 
@@ -241,6 +240,34 @@ has_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# 检查操作系统支持 (仅支持 Debian / Ubuntu 系 GNU/Linux 环境)
+check_os_support() {
+    local os_file="${1:-/etc/os-release}"
+    local is_supported=false
+    if [[ -f "$os_file" ]]; then
+        local os_id="" os_like=""
+        os_id=$(grep -E '^ID=' "$os_file" 2>/dev/null | cut -d= -f2 | tr -d '"'\''')
+        os_like=$(grep -E '^ID_LIKE=' "$os_file" 2>/dev/null | cut -d= -f2 | tr -d '"'\''')
+        if [[ "$os_id" == "debian" || "$os_id" == "ubuntu" ]] || [[ "$os_like" =~ debian|ubuntu ]]; then
+            is_supported=true
+        fi
+    fi
+    if [[ "$is_supported" == "false" ]] && has_cmd apt-get && [[ "$(uname -s 2>/dev/null)" == "Linux" ]]; then
+        is_supported=true
+    fi
+
+    if [[ "$is_supported" != "true" ]]; then
+        echo -e "${C_RED}Unsupported distribution.${C_RESET}"
+        echo -e "${C_RED}IPQA currently supports Debian and Ubuntu based systems.${C_RESET}"
+        return 1
+    fi
+    return 0
+}
+
+if ! check_os_support; then
+    exit 1
+fi
+
 # 检查 bash 版本 (需 >= 4.2 以支持负下标及 mapfile 等特性)
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
     echo -e "${C_RED}错误: Bash 版本必须 >= 4.2 (当前版本: ${BASH_VERSION:-未知})${C_RESET}"
@@ -275,18 +302,8 @@ pkg_install() {
     echo -e "${C_YELLOW}正在安装依赖包: ${pkgs[*]}...${C_RESET}"
     if has_cmd apt-get; then
         run_as_root apt-get update -qq && run_as_root apt-get install -y -qq "${pkgs[@]}"
-    elif has_cmd dnf; then
-        run_as_root dnf install -y -q "${pkgs[@]}"
-    elif has_cmd yum; then
-        run_as_root yum install -y -q "${pkgs[@]}"
-    elif has_cmd pacman; then
-        run_as_root pacman -Sy --noconfirm "${pkgs[@]}"
-    elif has_cmd apk; then
-        run_as_root apk add --no-cache "${pkgs[@]}"
-    elif has_cmd zypper; then
-        run_as_root zypper install -y "${pkgs[@]}"
     else
-        echo -e "${C_RED}未能识别系统包管理器，请手动安装: ${pkgs[*]}${C_RESET}"
+        echo -e "${C_RED}未能识别系统包管理器 (仅支持 Debian/Ubuntu apt-get)，请手动安装: ${pkgs[*]}${C_RESET}"
         return 1
     fi
 }
@@ -295,25 +312,17 @@ needed_pkgs=()
 has_cmd jq || needed_pkgs+=("jq")
 has_cmd curl || needed_pkgs+=("curl")
 
-# 跨发行版精准匹配 cron 软件包 (S-07: Debian/Ubuntu 为 cron，RHEL/CentOS/Fedora/Alpine/Arch/openSUSE 为 cronie)
+# 匹配 Debian/Ubuntu 下 cron 软件包
 if ! has_cmd crontab; then
     if has_cmd apt-get; then
         needed_pkgs+=("cron")
-    elif has_cmd dnf || has_cmd yum || has_cmd pacman || has_cmd apk || has_cmd zypper; then
-        needed_pkgs+=("cronie")
     fi
 fi
 
-# 检查 dig 与 nslookup (dnsutils 或 bind-utils)，保证流媒体/AI 解锁原生与 DNS 判定的准确性
+# 检查 dig 与 nslookup (Debian/Ubuntu 为 dnsutils)，保证流媒体/AI 解锁原生与 DNS 判定的准确性
 if ! has_cmd dig || ! has_cmd nslookup; then
     if has_cmd apt-get; then
         needed_pkgs+=("dnsutils")
-    elif has_cmd dnf || has_cmd yum || has_cmd zypper; then
-        needed_pkgs+=("bind-utils")
-    elif has_cmd apk; then
-        needed_pkgs+=("bind-tools")
-    elif has_cmd pacman; then
-        needed_pkgs+=("bind")
     fi
 fi
 
@@ -323,18 +332,18 @@ fi
 
 # 重新核验必要与推荐依赖
 if ! has_cmd jq; then
-    echo -e "${C_RED}错误: jq 未安装成功，请手动执行 apt/yum install -y jq${C_RESET}"
+    echo -e "${C_RED}错误: jq 未安装成功，请手动执行 apt-get install -y jq${C_RESET}"
     exit 1
 fi
 if ! has_cmd curl; then
-    echo -e "${C_RED}错误: curl 未安装成功，请手动执行 apt/yum install -y curl${C_RESET}"
+    echo -e "${C_RED}错误: curl 未安装成功，请手动执行 apt-get install -y curl${C_RESET}"
     exit 1
 fi
 if ! has_cmd crontab; then
-    echo -e "${C_YELLOW}⚠ 警告: 未检测到 crontab，定时自动检测功能将受限 (可安装 cron / cronie)${C_RESET}"
+    echo -e "${C_YELLOW}⚠ 警告: 未检测到 crontab，定时自动检测功能将受限 (可安装 cron)${C_RESET}"
 fi
 if ! has_cmd dig && ! has_cmd nslookup; then
-    echo -e "${C_YELLOW}⚠ 提示: 未检测到 dig/nslookup (dnsutils/bind-utils)，DNS 解锁精确判定可能受限${C_RESET}"
+    echo -e "${C_YELLOW}⚠ 提示: 未检测到 dig/nslookup (dnsutils)，DNS 解锁精确判定可能受限${C_RESET}"
 fi
 echo -e "${C_GREEN}✔ 必要依赖检查通过 (jq, curl, bash ${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]})${C_RESET}"
 
@@ -346,6 +355,34 @@ if ! mkdir -p "$INSTALL_DIR/data/v4" "$INSTALL_DIR/data/v6" "$INSTALL_DIR/logs" 
 fi
 chmod 700 "$INSTALL_DIR" "$INSTALL_DIR/data" "$INSTALL_DIR/data/v4" "$INSTALL_DIR/data/v6" "$INSTALL_DIR/logs" 2>/dev/null || true
 echo -e "${C_GREEN}✔ 运行目录创建完成 (权限已设为 700)${C_RESET}"
+
+# 安全下载函数 (校验 HTTP 状态、文件大小、特定项目指纹与 Bash 语法) (S-01)
+# 上游 ip.sh 修补函数 (针对临时文件或指定目标执行 patch)
+patch_ip_script() {
+    local target="$1"
+    [[ ! -f "$target" ]] && return 1
+
+    # 1. 修复上游 ip.sh 未将 IP2Location 公司类型写入 JSON 的 bug
+    if ! grep -q 'Company: { IP2LOCATION' "$target" 2>/dev/null; then
+        sed -i '/Company: { ipapi:/a \type_updates+=".Type |= . * { Company: { IP2LOCATION: \\"$(clean_ansi "${ip2location[scomtype]:-null}")\\" } } | "' "$target" 2>/dev/null || true
+    fi
+    # 2. 修复上游 ip.sh 在 Check_DNS_3 中因缺少 dig 或超时将原生解锁误判为 DNS 解锁的 bug
+    if grep -q 'if \[ "$resultdnstext" == "0" \];then' "$target" 2>/dev/null; then
+        sed -i 's/if \[ "$resultdnstext" == "0" \];then/if [ "$resultdnstext" == "0" ] || [ -z "$resultdnstext" ];then/g' "$target" 2>/dev/null || true
+    fi
+    # 3. 修复上游 ip.sh 在 Check_DNS_IP 中因未解析到 IP 将原生解锁误判为 DNS 解锁的 bug
+    sed -i -e '/function Check_DNS_IP/,/function Check_DNS_1/{ /else/{ n; s/echo 0/echo 1/; } }' "$target" 2>/dev/null || true
+    # 4. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
+    sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$target" 2>/dev/null || true
+    # 5. 修复上游 ip.sh 中 db_dbip 因单引号字面量 local tmpcurlarg='$CurlARG' 导致未能正确继承 -4/-6 参数的 bug
+    sed -i "s/local tmpcurlarg='\$CurlARG'/local tmpcurlarg=\"\$CurlARG\"/g" "$target" 2>/dev/null || true
+    # 6. 修复上游 ip.sh 中 Amazon Prime Video 地区提取贪婪匹配导致 JS 乱码与排版坍塌的 bug
+    if grep -q "currentTerritory//'|cut -f3" "$target" 2>/dev/null; then
+        sed -i 's@currentTerritory//'\''|cut -f3 -d'\''"'\''@currentTerritory":\\s*"[A-Za-z]{2}"'\''|head -n 1|cut -d"\\"" -f4@g' "$target" 2>/dev/null || true
+    fi
+
+    return 0
+}
 
 # 安全下载函数 (校验 HTTP 状态、文件大小、特定项目指纹与 Bash 语法) (S-01)
 safe_download() {
@@ -382,11 +419,24 @@ safe_download() {
             rm -f "$tmp"
             return 1
         fi
+        sed -i 's/\r$//' "$tmp" 2>/dev/null || true
+        # 对临时文件执行 patch
+        patch_ip_script "$tmp" || { rm -f "$tmp"; return 1; }
+        # patch 后必须重新通过 bash -n 验证
+        if ! bash -n "$tmp" 2>/dev/null; then
+            rm -f "$tmp"
+            return 1
+        fi
+        # 必要的 feature sanity check
+        if ! grep -qE "IPQuality|Check_DNS|IP\.Check\.Place|script_version" "$tmp" 2>/dev/null; then
+            rm -f "$tmp"
+            return 1
+        fi
     fi
 
     sed -i 's/\r$//' "$tmp" 2>/dev/null || true
-    mv "$tmp" "$dest"
-    chmod +x "$dest"
+    chmod +x "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$dest"
     return 0
 }
 
@@ -407,46 +457,41 @@ chmod 755 "$INSTALL_DIR/ipqa.sh"
 
 # 4. 下载/缓存 IPQuality 检测脚本核心
 echo -e "\n${C_BOLD}[4/5] 初始化 IPQuality 检测引擎缓存...${C_RESET}"
+local_core_src=""
 if [[ -f "$SCRIPT_DIR/ip.sh" ]]; then
-    cp "$SCRIPT_DIR/ip.sh" "$INSTALL_DIR/ip.sh"
-    chmod +x "$INSTALL_DIR/ip.sh"
-    echo -e "${C_GREEN}✔ 已自本地同步 IPQuality 引擎缓存${C_RESET}"
+    local_core_src="$SCRIPT_DIR/ip.sh"
 elif [[ -f "$SCRIPT_DIR/IP-Quality-Detection-Project/ip.sh" ]]; then
-    cp "$SCRIPT_DIR/IP-Quality-Detection-Project/ip.sh" "$INSTALL_DIR/ip.sh"
-    chmod +x "$INSTALL_DIR/ip.sh"
-    echo -e "${C_GREEN}✔ 已自本地同步 IPQuality 引擎缓存${C_RESET}"
-else
-    echo -e "${C_CYAN}正在下载 IPQuality 上游脚本...${C_RESET}"
-    if safe_download "https://IP.Check.Place" "$INSTALL_DIR/ip.sh" "core" || safe_download "https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh" "$INSTALL_DIR/ip.sh" "core"; then
-        echo -e "${C_GREEN}✔ IPQuality 引擎下载成功${C_RESET}"
+    local_core_src="$SCRIPT_DIR/IP-Quality-Detection-Project/ip.sh"
+fi
+
+core_installed=false
+if [[ -n "$local_core_src" ]]; then
+    tmp_local="$INSTALL_DIR/ip.sh.tmp.$$.$RANDOM"
+    cp "$local_core_src" "$tmp_local"
+    sed -i 's/\r$//' "$tmp_local" 2>/dev/null || true
+    if bash -n "$tmp_local" 2>/dev/null && patch_ip_script "$tmp_local" && bash -n "$tmp_local" 2>/dev/null && grep -qE "IPQuality|Check_DNS|IP\.Check\.Place|script_version" "$tmp_local" 2>/dev/null; then
+        chmod +x "$tmp_local" 2>/dev/null || true
+        mv -f "$tmp_local" "$INSTALL_DIR/ip.sh"
+        echo -e "${C_GREEN}✔ 已自本地同步并修补 IPQuality 引擎缓存${C_RESET}"
+        core_installed=true
     else
-        echo -e "${C_YELLOW}⚠ 引擎在线下载受阻，运行首次检测时将自动重试${C_RESET}"
+        rm -f "$tmp_local"
+        echo -e "${C_YELLOW}⚠ 本地 IPQuality 引擎语法或修补校验失败，尝试在线下载...${C_RESET}"
     fi
 fi
 
-if [[ -f "$INSTALL_DIR/ip.sh" ]]; then
-    sed -i 's/\r$//' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
-    chmod +x "$INSTALL_DIR/ip.sh"
-    # 1. 修复上游 ip.sh 未将 IP2Location 公司类型写入 JSON 的 bug
-    if ! grep -q 'Company: { IP2LOCATION' "$INSTALL_DIR/ip.sh" 2>/dev/null; then
-        sed -i '/Company: { ipapi:/a \type_updates+=".Type |= . * { Company: { IP2LOCATION: \\"$(clean_ansi "${ip2location[scomtype]:-null}")\\" } } | "' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
-    fi
-    # 2. 修复上游 ip.sh 在 Check_DNS_3 中因缺少 dig 或超时将原生解锁误判为 DNS 解锁的 bug
-    if grep -q 'if \[ "$resultdnstext" == "0" \];then' "$INSTALL_DIR/ip.sh" 2>/dev/null; then
-        sed -i 's/if \[ "$resultdnstext" == "0" \];then/if [ "$resultdnstext" == "0" ] || [ -z "$resultdnstext" ];then/g' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
-    fi
-    # 3. 修复上游 ip.sh 在 Check_DNS_IP 中因未解析到 IP 将原生解锁误判为 DNS 解锁的 bug
-    sed -i -e '/function Check_DNS_IP/,/function Check_DNS_1/{ /else/{ n; s/echo 0/echo 1/; } }' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
-    # 4. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
-    sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
-    # 5. 修复上游 ip.sh 中 db_dbip 因单引号字面量 local tmpcurlarg='$CurlARG' 导致未能正确继承 -4/-6 参数的 bug
-    sed -i "s/local tmpcurlarg='\$CurlARG'/local tmpcurlarg=\"\$CurlARG\"/g" "$INSTALL_DIR/ip.sh" 2>/dev/null || true
-    # 6. 修复上游 ip.sh 中 Amazon Prime Video 地区提取贪婪匹配导致 JS 乱码与排版坍塌的 bug
-    if grep -q "currentTerritory//'|cut -f3" "$INSTALL_DIR/ip.sh" 2>/dev/null; then
-        sed -i 's@currentTerritory//'\''|cut -f3 -d'\''"'\''@currentTerritory":\\s*"[A-Za-z]{2}"'\''|head -n 1|cut -d"\\"" -f4@g' "$INSTALL_DIR/ip.sh" 2>/dev/null || true
-    fi
-    if ! bash -n "$INSTALL_DIR/ip.sh" 2>/dev/null; then
-        echo -e "${C_YELLOW}⚠ 警告: 检测核心修补后语法校验异常${C_RESET}"
+if [[ "$core_installed" != "true" ]]; then
+    echo -e "${C_CYAN}正在下载 IPQuality 上游脚本...${C_RESET}"
+    if safe_download "https://IP.Check.Place" "$INSTALL_DIR/ip.sh" "core" || safe_download "https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh" "$INSTALL_DIR/ip.sh" "core"; then
+        echo -e "${C_GREEN}✔ IPQuality 引擎下载与修补验证成功${C_RESET}"
+        core_installed=true
+    else
+        if [[ -f "$INSTALL_DIR/ip.sh" && -s "$INSTALL_DIR/ip.sh" ]] && bash -n "$INSTALL_DIR/ip.sh" 2>/dev/null; then
+            echo -e "${C_YELLOW}⚠ 引擎在线下载受阻，保留已有本地版本${C_RESET}"
+            core_installed=true
+        else
+            echo -e "${C_YELLOW}⚠ 引擎在线下载受阻，运行首次检测时将自动重试${C_RESET}"
+        fi
     fi
 fi
 

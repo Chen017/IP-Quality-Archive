@@ -86,10 +86,21 @@ mkdir -p "$V4_DIR" "$V6_DIR" "$LOGS_DIR"
 chmod 700 "$IPQA_HOME" "$DATA_DIR" "$V4_DIR" "$V6_DIR" "$LOGS_DIR" 2>/dev/null || true
 [[ -f "$CONFIG_FILE" ]] && chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 
+# 统一定义当前 Bash 执行进程身份 (解决 subshell 与后台任务 PID 身份一致性)
+get_current_pid() {
+    if [[ -n "${1:-}" ]]; then
+        printf -v "$1" '%s' "${BASHPID:-$$}"
+    else
+        printf '%s\n' "${BASHPID:-$$}"
+    fi
+}
+
 # 进程并发锁控制 (M-08A, M-08B: 统一主锁、原子恢复、所有者校验与可重入嵌套深度支持)
 acquire_lock() {
     local lock_name="${1:-main}"
-    local depth_var="_LOCK_DEPTH_${lock_name}"
+    local my_pid
+    get_current_pid my_pid
+    local depth_var="_LOCK_DEPTH_${lock_name}_${my_pid}"
     local current_depth="${!depth_var:-0}"
 
     if (( current_depth > 0 )); then
@@ -102,7 +113,7 @@ acquire_lock() {
 
     # 1. 尝试原子创建锁目录
     if mkdir "$lock_dir" 2>/dev/null; then
-        echo "$$" > "$pid_file" 2>/dev/null || true
+        echo "$my_pid" > "$pid_file" 2>/dev/null || true
         eval "${depth_var}=1"
         return 0
     fi
@@ -111,18 +122,18 @@ acquire_lock() {
     if [[ -f "$pid_file" ]]; then
         local current_lock_pid
         current_lock_pid=$(cat "$pid_file" 2>/dev/null || true)
-        if [[ "$current_lock_pid" == "$$" ]]; then
+        if [[ "$current_lock_pid" == "$my_pid" ]]; then
             eval "${depth_var}=1"
             return 0
         fi
 
         # 3. 检查持有者是否已死亡 (stale-lock 原子恢复 M-08B)
         if [[ -n "$current_lock_pid" ]] && ! kill -0 "$current_lock_pid" 2>/dev/null; then
-            local stale_mv="$IPQA_HOME/.lock_stale_${lock_name}_$$.$RANDOM"
+            local stale_mv="$IPQA_HOME/.lock_stale_${lock_name}_${my_pid}.$RANDOM"
             if mv "$lock_dir" "$stale_mv" 2>/dev/null; then
                 rm -rf "$stale_mv" 2>/dev/null || true
                 if mkdir "$lock_dir" 2>/dev/null; then
-                    echo "$$" > "$pid_file" 2>/dev/null || true
+                    echo "$my_pid" > "$pid_file" 2>/dev/null || true
                     eval "${depth_var}=1"
                     return 0
                 fi
@@ -136,7 +147,9 @@ acquire_lock() {
 release_lock() {
     local lock_name="${1:-main}"
     local force="${2:-false}"
-    local depth_var="_LOCK_DEPTH_${lock_name}"
+    local my_pid
+    get_current_pid my_pid
+    local depth_var="_LOCK_DEPTH_${lock_name}_${my_pid}"
     local current_depth="${!depth_var:-0}"
 
     if [[ "$force" != "true" ]] && (( current_depth > 1 )); then
@@ -152,12 +165,26 @@ release_lock() {
         local lock_pid
         lock_pid=$(cat "$pid_file" 2>/dev/null || true)
         # 仅允许持锁者清理自己的锁 (M-08B)
-        if [[ "$lock_pid" == "$$" || "$force" == "true" ]]; then
+        if [[ "$lock_pid" == "$my_pid" || "$force" == "true" ]]; then
             rm -rf "$lock_dir" 2>/dev/null || true
         fi
     elif [[ -d "$lock_dir" ]]; then
         rm -rf "$lock_dir" 2>/dev/null || true
     fi
+}
+
+cleanup_main_lock() {
+    release_lock "main"
+}
+
+handle_interrupt() {
+    cleanup_main_lock
+    exit 130
+}
+
+handle_term() {
+    cleanup_main_lock
+    exit 143
 }
 
 # 日志自动轮转控制 (S-16, 单文件上限 5MB)
@@ -437,66 +464,83 @@ check_dependencies() {
     command -v curl >/dev/null 2>&1 || missing+=("curl")
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo -e "${C_RED}错误: 缺少必要依赖: ${missing[*]}${C_RESET}"
-        echo -e "请先安装: ${C_YELLOW}apt install -y ${missing[*]}${C_RESET} 或 ${C_YELLOW}yum install -y ${missing[*]}${C_RESET}"
+        echo -e "请先安装: ${C_YELLOW}apt-get install -y ${missing[*]}${C_RESET}"
         exit 1
     fi
 }
 
 patch_ip_script() {
-    [[ ! -f "$IP_SCRIPT" ]] && return
+    local target="${1:-$IP_SCRIPT}"
+    [[ ! -f "$target" ]] && return 1
 
     # 1. 修复上游 ip.sh 未将 IP2Location 公司类型写入 JSON 的 bug
-    if ! grep -q 'Company: { IP2LOCATION' "$IP_SCRIPT" 2>/dev/null; then
-        sed -i '/Company: { ipapi:/a \type_updates+=".Type |= . * { Company: { IP2LOCATION: \\"$(clean_ansi "${ip2location[scomtype]:-null}")\\" } } | "' "$IP_SCRIPT" 2>/dev/null || true
+    if ! grep -q 'Company: { IP2LOCATION' "$target" 2>/dev/null; then
+        sed -i '/Company: { ipapi:/a \type_updates+=".Type |= . * { Company: { IP2LOCATION: \\"$(clean_ansi "${ip2location[scomtype]:-null}")\\" } } | "' "$target" 2>/dev/null || true
     fi
 
     # 2. 修复上游 ip.sh 在 Check_DNS_3 中因缺少 dig 或超时将原生解锁误判为 DNS 解锁的 bug
-    if grep -q 'if \[ "$resultdnstext" == "0" \];then' "$IP_SCRIPT" 2>/dev/null; then
-        sed -i 's/if \[ "$resultdnstext" == "0" \];then/if [ "$resultdnstext" == "0" ] || [ -z "$resultdnstext" ];then/g' "$IP_SCRIPT" 2>/dev/null || true
+    if grep -q 'if \[ "$resultdnstext" == "0" \];then' "$target" 2>/dev/null; then
+        sed -i 's/if \[ "$resultdnstext" == "0" \];then/if [ "$resultdnstext" == "0" ] || [ -z "$resultdnstext" ];then/g' "$target" 2>/dev/null || true
     fi
 
     # 3. 修复上游 ip.sh 在 Check_DNS_IP 中因未解析到 IP 将原生解锁误判为 DNS 解锁的 bug
-    sed -i -e '/function Check_DNS_IP/,/function Check_DNS_1/{ /else/{ n; s/echo 0/echo 1/; } }' "$IP_SCRIPT" 2>/dev/null || true
+    sed -i -e '/function Check_DNS_IP/,/function Check_DNS_1/{ /else/{ n; s/echo 0/echo 1/; } }' "$target" 2>/dev/null || true
 
     # 4. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
-    sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$IP_SCRIPT" 2>/dev/null || true
+    sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$target" 2>/dev/null || true
 
     # 5. 修复上游 ip.sh 中 db_dbip 因单引号字面量 local tmpcurlarg='$CurlARG' 导致未能正确继承 -4/-6 参数的 bug
-    sed -i "s/local tmpcurlarg='\$CurlARG'/local tmpcurlarg=\"\$CurlARG\"/g" "$IP_SCRIPT" 2>/dev/null || true
+    sed -i "s/local tmpcurlarg='\$CurlARG'/local tmpcurlarg=\"\$CurlARG\"/g" "$target" 2>/dev/null || true
 
     # 6. 修复上游 ip.sh 中 Amazon Prime Video 地区提取贪婪匹配导致 JS 乱码与排版坍塌的 bug
-    if grep -q "currentTerritory//'|cut -f3" "$IP_SCRIPT" 2>/dev/null; then
-        sed -i 's@local result=\$(echo \$tmpresult|grep .*currentTerritory.*head -n 1)@local result=$(echo $tmpresult|grep -o -E '\''"currentTerritory":\\s*"[A-Za-z]{2}"'\''|head -n 1|cut -d"\\"" -f4)@g' "$IP_SCRIPT" 2>/dev/null || true
+    if grep -q "currentTerritory//'|cut -f3" "$target" 2>/dev/null; then
+        sed -i 's@local result=\$(echo \$tmpresult|grep .*currentTerritory.*head -n 1)@local result=$(echo $tmpresult|grep -o -E '\''"currentTerritory":\\s*"[A-Za-z]{2}"'\''|head -n 1|cut -d"\\"" -f4)@g' "$target" 2>/dev/null || true
     fi
+
+    return 0
 }
 
 ensure_ip_script() {
-    if [[ ! -f "$IP_SCRIPT" ]]; then
-        echo -e "${C_CYAN}正在初始化并下载 IPQuality 上游脚本缓存...${C_RESET}"
-        local script_dir
-        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        if [[ -f "$script_dir/ip.sh" ]]; then
-            cp "$script_dir/ip.sh" "$IP_SCRIPT"
-        elif [[ -f "$script_dir/IP-Quality-Detection-Project/ip.sh" ]]; then
-            cp "$script_dir/IP-Quality-Detection-Project/ip.sh" "$IP_SCRIPT"
-        else
-            local tmp_ip="$IPQA_HOME/.ip.sh.tmp.$$.$RANDOM"
-            if curl -fsSL --connect-timeout 8 --max-time 30 https://IP.Check.Place -o "$tmp_ip" 2>/dev/null || curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_ip" 2>/dev/null; then
-                if [[ $(wc -c < "$tmp_ip" 2>/dev/null || echo 0) -gt 1000 ]] && bash -n "$tmp_ip" 2>/dev/null && grep -qE "IPQuality|Check_DNS|script_version" "$tmp_ip" 2>/dev/null; then
-                    mv "$tmp_ip" "$IP_SCRIPT"
-                else
-                    rm -f "$tmp_ip"
-                fi
-            else
-                rm -f "$tmp_ip"
-            fi
-        fi
-        sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
-        chmod +x "$IP_SCRIPT" 2>/dev/null || true
-        patch_ip_script
-    else
-        patch_ip_script
+    if [[ -f "$IP_SCRIPT" ]]; then
+        return 0
     fi
+
+    echo -e "${C_CYAN}正在初始化并下载 IPQuality 上游脚本缓存...${C_RESET}"
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local tmp_ip="$IPQA_HOME/.ip.sh.tmp.$.$RANDOM"
+    local source_found=false
+
+    if [[ -f "$script_dir/ip.sh" ]]; then
+        cp "$script_dir/ip.sh" "$tmp_ip" 2>/dev/null && source_found=true
+    elif [[ -f "$script_dir/IP-Quality-Detection-Project/ip.sh" ]]; then
+        cp "$script_dir/IP-Quality-Detection-Project/ip.sh" "$tmp_ip" 2>/dev/null && source_found=true
+    else
+        if curl -fsSL --connect-timeout 8 --max-time 30 https://IP.Check.Place -o "$tmp_ip" 2>/dev/null || curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_ip" 2>/dev/null; then
+            source_found=true
+        fi
+    fi
+
+    if [[ "$source_found" == "true" && -f "$tmp_ip" ]]; then
+        sed -i 's/\r$//' "$tmp_ip" 2>/dev/null || true
+        local sz
+        sz=$(wc -c < "$tmp_ip" 2>/dev/null || echo 0)
+        if (( sz > 1000 )) && bash -n "$tmp_ip" 2>/dev/null && grep -qE "IPQuality|Check_DNS|script_version" "$tmp_ip" 2>/dev/null; then
+            if patch_ip_script "$tmp_ip" && bash -n "$tmp_ip" 2>/dev/null; then
+                chmod 755 "$tmp_ip" 2>/dev/null || chmod +x "$tmp_ip" 2>/dev/null || true
+                mv -f "$tmp_ip" "$IP_SCRIPT"
+            else
+                rm -f "$tmp_ip" 2>/dev/null || true
+                echo -e "${C_RED}错误: IPQuality 脚本 patch 或语法校验失败${C_RESET}"
+                return 1
+            fi
+        else
+            rm -f "$tmp_ip" 2>/dev/null || true
+        fi
+    else
+        rm -f "$tmp_ip" 2>/dev/null || true
+    fi
+
     if [[ ! -f "$IP_SCRIPT" ]]; then
         echo -e "${C_RED}错误: 无法获取有效的 IPQuality 脚本缓存 ($IP_SCRIPT)${C_RESET}"
         return 1
@@ -513,6 +557,16 @@ auto_update_if_needed() {
     if ! acquire_lock "main"; then
         [[ "$quiet" == "false" ]] && echo -e "${C_YELLOW}⚠ 正在进行其他检测或更新任务，跳过本次自动更新${C_RESET}"
         return 0
+    fi
+    local my_pid
+    get_current_pid my_pid
+    local depth_var="_LOCK_DEPTH_main_${my_pid}"
+    local is_outer_lock=false
+    [[ "${!depth_var:-0}" -eq 1 ]] && is_outer_lock=true
+    if [[ "$is_outer_lock" == "true" ]]; then
+        trap cleanup_main_lock EXIT
+        trap handle_interrupt INT
+        trap handle_term TERM
     fi
 
     # M-09: 核心与主脚本更新时间戳完全独立管理
@@ -561,18 +615,22 @@ auto_update_if_needed() {
                     sed -i 's/\r$//' "$tmp_ip" 2>/dev/null || true
                     # S-01: 校验大小、语法完整性及项目特征
                     if [[ $(wc -c < "$tmp_ip" 2>/dev/null || echo 0) -gt 3000 ]] && bash -n "$tmp_ip" 2>/dev/null && grep -qE "IPQuality|Check_DNS|script_version" "$tmp_ip" 2>/dev/null; then
-                        if [[ -f "$IP_SCRIPT" ]] && cmp -s "$tmp_ip" "$IP_SCRIPT"; then
-                            rm -f "$tmp_ip"
-                            log_msg "INFO" "IPQuality 检测核心已是最新版本"
+                        if patch_ip_script "$tmp_ip" && bash -n "$tmp_ip" 2>/dev/null; then
+                            chmod 755 "$tmp_ip" 2>/dev/null || chmod +x "$tmp_ip" 2>/dev/null || true
+                            if [[ -f "$IP_SCRIPT" ]] && cmp -s "$tmp_ip" "$IP_SCRIPT"; then
+                                rm -f "$tmp_ip"
+                                log_msg "INFO" "IPQuality 检测核心已是最新版本"
+                            else
+                                mv -f "$tmp_ip" "$IP_SCRIPT"
+                                local new_ver
+                                new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
+                                log_msg "INFO" "检测核心自动更新成功，版本: ${new_ver:-未知}"
+                            fi
+                            echo "$now_sec" > "$stamp_core"
                         else
-                            mv "$tmp_ip" "$IP_SCRIPT"
-                            chmod +x "$IP_SCRIPT"
-                            patch_ip_script
-                            local new_ver
-                            new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
-                            log_msg "INFO" "检测核心自动更新成功，版本: ${new_ver:-未知}"
+                            rm -f "$tmp_ip"
+                            log_msg "WARN" "检测核心 patch 规则应用或语法校验失败，保留本地核心"
                         fi
-                        echo "$now_sec" > "$stamp_core"
                     else
                         rm -f "$tmp_ip"
                         log_msg "WARN" "自动更新检测核心完整性或语法校验失败，保留本地核心"
@@ -622,7 +680,10 @@ auto_update_if_needed() {
         [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPQA 自动更新检查完成${C_RESET}\n"
     fi
 
-    release_lock "main"
+    cleanup_main_lock
+    if [[ "$is_outer_lock" == "true" ]]; then
+        trap - EXIT INT TERM
+    fi
 }
 
 # 验证 JSON 有效性
@@ -780,9 +841,9 @@ render_daily_alerts_summary() {
             if [[ "$has_checks" == "false" ]]; then
                 echo -e "  ${C_GRAY}• [${short_date}] 当日无检测记录${C_RESET}"
             elif [[ -f "$ALERT_LOG" ]] && grep -q "^$d .*首次完成数据存档监测" "$ALERT_LOG" 2>/dev/null; then
-                echo -e "  ${C_GREEN}• [${short_date}] 首次完成建档监测: 各权威数据库及流媒体状态稳定良好${C_RESET}"
+                echo -e "  ${C_GREEN}• [${short_date}] 首次完成建档监测，当前状态已记录。${C_RESET}"
             else
-                echo -e "  ${C_GREEN}• [${short_date}] 运行平稳 (0 风险变动): 各权威数据库及流媒体状态稳定良好${C_RESET}"
+                echo -e "  ${C_GREEN}• [${short_date}] 无风险变动: 本次检测未发现新的状态变化。${C_RESET}"
             fi
         else
             local crit_cnt=0 warn_cnt=0 info_cnt=0
@@ -1100,11 +1161,13 @@ run_check() {
             return 1
         fi
     fi
-    trap 'release_lock "main" true' EXIT INT TERM
+    trap cleanup_main_lock EXIT
+    trap handle_interrupt INT
+    trap handle_term TERM
 
     load_config
     if ! ensure_ip_script; then
-        release_lock "main"
+        cleanup_main_lock
         trap - EXIT INT TERM
         return 1
     fi
@@ -1214,7 +1277,7 @@ run_check() {
         done
     fi
 
-    release_lock "main"
+    cleanup_main_lock
     trap - EXIT INT TERM
 
     local end_sec
@@ -2803,7 +2866,7 @@ show_alerts_history() {
         if (( total_archives == 0 )); then
             echo -e "  ${C_YELLOW}• 暂无任何检测存档与提醒记录，请先执行一次检测 (选项 9)${C_RESET}\n"
         else
-            echo -e "  ${C_GREEN}• 暂无任何风险变化提醒记录，IP 质量状态保持稳定${C_RESET}\n"
+            echo -e "  ${C_GREEN}• 暂无新的风险变化提醒记录${C_RESET}\n"
         fi
         read -r -p "按回车键返回主菜单..."
         return
@@ -2820,7 +2883,7 @@ show_alerts_history() {
         if (( total_archives == 0 )); then
             echo -e "  ${C_YELLOW}• 暂无任何检测存档与提醒记录，请先执行一次检测 (选项 9)${C_RESET}\n"
         else
-            echo -e "  ${C_GREEN}• 暂无任何风险变化提醒记录，IP 质量状态保持稳定${C_RESET}\n"
+            echo -e "  ${C_GREEN}• 暂无新的风险变化提醒记录${C_RESET}\n"
         fi
         read -r -p "按回车键返回主菜单..."
         return
@@ -3169,6 +3232,9 @@ update_ipqa() {
         echo -e "${C_YELLOW}⚠ 另有 IPQA 检测或更新任务正在运行中，已取消当前更新操作。${C_RESET}\n"
         exit 1
     fi
+    trap cleanup_main_lock EXIT
+    trap handle_interrupt INT
+    trap handle_term TERM
 
     echo -e "${C_CYAN}正在检查并下载 IPQA 主程序最新版本...${C_RESET}"
     local tmp_file="$IPQA_HOME/ipqa.sh.tmp.$$.$RANDOM"
@@ -3203,14 +3269,18 @@ update_ipqa() {
         csz=$(wc -c < "$tmp_core" 2>/dev/null || echo 0)
         # S-01: 必须先通过 bash -n 语法校验与项目特征比对
         if (( csz > 3000 )) && bash -n "$tmp_core" 2>/dev/null && grep -q -E '(script_version|IP\.Check\.Place|IPQuality|Check_DNS)' "$tmp_core" 2>/dev/null; then
-            mv "$tmp_core" "$IP_SCRIPT"
-            sed -i 's/\r$//' "$IP_SCRIPT" 2>/dev/null || true
-            chmod 755 "$IP_SCRIPT" 2>/dev/null || chmod +x "$IP_SCRIPT"
-            patch_ip_script
-            date +%s > "$IPQA_HOME/.last_core_update" 2>/dev/null || true
-            rm -f "$IPQA_HOME/.last_auto_update" 2>/dev/null || true
-            echo -e "${C_GREEN}✔ IPQuality 检测核心已成功同步至最新版本！${C_RESET}"
-            core_ok=true
+            sed -i 's/\r$//' "$tmp_core" 2>/dev/null || true
+            if patch_ip_script "$tmp_core" && bash -n "$tmp_core" 2>/dev/null; then
+                chmod 755 "$tmp_core" 2>/dev/null || chmod +x "$tmp_core" 2>/dev/null || true
+                mv -f "$tmp_core" "$IP_SCRIPT"
+                date +%s > "$IPQA_HOME/.last_core_update" 2>/dev/null || true
+                rm -f "$IPQA_HOME/.last_auto_update" 2>/dev/null || true
+                echo -e "${C_GREEN}✔ IPQuality 检测核心已成功同步至最新版本！${C_RESET}"
+                core_ok=true
+            else
+                rm -f "$tmp_core"
+                echo -e "${C_YELLOW}⚠ 检测核心 patch 规则应用或语法校验未通过，已保留本地版本${C_RESET}"
+            fi
         else
             rm -f "$tmp_core"
             echo -e "${C_YELLOW}⚠ 检测核心内容不完整或语法校验未通过，已保留本地版本${C_RESET}"
@@ -3220,7 +3290,8 @@ update_ipqa() {
         echo -e "${C_YELLOW}⚠ 检测核心下载超时，已保留本地版本${C_RESET}"
     fi
 
-    release_lock "main"
+    cleanup_main_lock
+    trap - EXIT INT TERM
 
     if [[ "$main_ok" == "true" && "$core_ok" == "true" ]]; then
         echo -e "\n${C_GREEN}${C_BOLD}🎉 IPQA 系统及检测核心已全部更新完成！${C_RESET}\n"
@@ -3467,7 +3538,7 @@ show_status() {
         if (( recent_archives == 0 )); then
             echo -e "  • 近三日无检测记录 (历史检测保持原有状态)"
         else
-            echo -e "  • 近三日无任何风险变化提醒记录，各数据库及流媒体状态稳定良好"
+            echo -e "  • 近三日未检测到新的状态变化记录"
         fi
     else
         local i=1

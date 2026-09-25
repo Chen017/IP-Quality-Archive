@@ -18,6 +18,16 @@ IPQA 可以完全独立使用；如果同时部署 Komari，还可通过配套�
 
 ---
 
+## 系统支持 (Supported Systems)
+
+This project targets Debian/Ubuntu based GNU/Linux systems.
+
+Supported systems:
+- **Debian** (10 / 11 / 12+)
+- **Ubuntu** (20.04 / 22.04 / 24.04+)
+
+---
+
 ## 一键安装
 
 ```bash

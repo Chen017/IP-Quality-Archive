@@ -230,7 +230,8 @@ else
 fi
 
 # 8. 生产原子互斥锁与 Stale-Lock 恢复测试 (M-08A, M-08B)
-echo -e "\n[测试组 8] 生产原子互斥锁与 Stale-Lock 恢复 (M-08A, M-08B):"
+echo -e "\n[测试组 8] 生产原子互斥锁、Stale-Lock 恢复与跨进程互斥 (M-08A, M-08B):"
+eval "$(sed -n '/^get_current_pid()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 eval "$(sed -n '/^acquire_lock()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 eval "$(sed -n '/^release_lock()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 
@@ -272,12 +273,208 @@ else
     fail "Stale 锁恢复" "未能恢复死亡进程的锁"
 fi
 
+# 多进程真实锁竞争测试 (子进程 A 持锁，子进程 B 竞争必须失败，A 释放后 B 成功)
+LOCK_TEST_DIR="$TEST_ENV_DIR/lock_race_test"
+mkdir -p "$LOCK_TEST_DIR"
+(
+    export IPQA_HOME="$LOCK_TEST_DIR"
+    acquire_lock "main"
+    sleep 1
+    release_lock "main"
+) &
+PID_A=$!
+
+# 等待 Process A 成功持锁
+for ((try=0; try<20; try++)); do
+    [[ -f "$LOCK_TEST_DIR/.lock_main/pid" ]] && break
+    sleep 0.05
+done
+
+# Process B 尝试加锁 (不同进程，PID 与 BASHPID 均不同)
+B_ACQUIRED=0
+if (
+    export IPQA_HOME="$LOCK_TEST_DIR"
+    acquire_lock "main"
+) 2>/dev/null; then
+    B_ACQUIRED=1
+fi
+
+if [[ "$B_ACQUIRED" -eq 0 ]]; then
+    pass "Process A 持锁期间，Process B 竞争主锁被成功拦截且未误判为重入"
+else
+    fail "主锁跨进程互斥" "Process B 在 Process A 持锁期间错误获取了锁"
+fi
+
+# 等待 Process A 释放
+wait "$PID_A" 2>/dev/null || true
+
+# Process B 再次尝试加锁，此时必须成功
+B_SUCCESS_AFTER=0
+if (
+    export IPQA_HOME="$LOCK_TEST_DIR"
+    if acquire_lock "main"; then
+        release_lock "main"
+        exit 0
+    else
+        exit 1
+    fi
+) 2>/dev/null; then
+    B_SUCCESS_AFTER=1
+fi
+
+if [[ "$B_SUCCESS_AFTER" -eq 1 ]]; then
+    pass "Process A 释放主锁后，Process B 成功获得主锁"
+else
+    fail "主锁释放后竞争" "Process A 释放后 Process B 仍无法获取锁"
+fi
+
 # 9. 系统自检指令测试 (Q-03, N-06: 沙箱隔离下运行)
 echo -e "\n[测试组 9] 系统环境与自检指令 (--test):"
 if bash "$REPO_ROOT/ipqa.sh" --test >/dev/null 2>&1; then
     pass "ipqa --test 在隔离测试环境下成功运行并返回 0 (N-06)"
 else
     fail "系统自检" "ipqa --test 返回非 0 状态"
+fi
+
+# 10. 无变化语义中性表达测试 (状态不健康时不报良好)
+echo -e "\n[测试组 10] 无变化语义中性表达测试 (不健康状态无变化时不误报良好):"
+UNHEALTHY_DIR="$TEST_ENV_DIR/unhealthy_archives"
+mkdir -p "$UNHEALTHY_DIR"
+UNHEALTHY_V4="$UNHEALTHY_DIR/v4"
+UNHEALTHY_V6="$UNHEALTHY_DIR/v6"
+mkdir -p "$UNHEALTHY_V4" "$UNHEALTHY_V6"
+
+d1="2026-09-24"
+d2="2026-09-25"
+unhealthy_json='{
+    "Head": {"IP": "198.51.100.1"},
+    "Type": "DataCenter",
+    "Score": 85,
+    "Factor": {"VPN": "Yes", "Tor": "Yes"},
+    "Media": {"Netflix": {"Status": "Blocked", "Region": "US"}, "Youtube": {"Status": "Blocked", "Region": "US"}},
+    "Mail": {"Port25": "No", "DNSBlacklist": {"Blacklisted": 5}}
+}'
+
+echo "$unhealthy_json" > "$UNHEALTHY_V4/${d1}_120000.json"
+echo "$unhealthy_json" > "$UNHEALTHY_V4/${d2}_120000.json"
+
+ALERT_LOG="$UNHEALTHY_DIR/alerts.log"
+touch "$ALERT_LOG"
+C_RESET="" C_GREEN="" C_GRAY="" C_YELLOW="" C_RED="" C_BOLD=""
+eval "$(sed -n '/^render_daily_alerts_summary()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+
+output_summary=$(
+    V4_DIR="$UNHEALTHY_V4"
+    V6_DIR="$UNHEALTHY_V6"
+    render_daily_alerts_summary 1 2>/dev/null || true
+)
+
+if [[ "$output_summary" =~ (无|未发现) ]] && [[ ! "$output_summary" =~ (良好|稳定良好|一切正常) ]]; then
+    pass "不健康但无变化时，摘要输出中性描述且不包含'良好'/'稳定良好'/'一切正常'"
+else
+    fail "无变化语义中性化" "检测到不合时宜的正面评语: '$output_summary'"
+fi
+
+# 11. 检测核心 patch 事务原子性与失败回滚测试
+echo -e "\n[测试组 11] 检测核心 patch 事务原子性与失败回滚测试:"
+PATCH_TEST_DIR="$TEST_ENV_DIR/patch_test"
+mkdir -p "$PATCH_TEST_DIR"
+FORMAL_CORE="$PATCH_TEST_DIR/ip.sh"
+echo '#!/usr/bin/env bash' > "$FORMAL_CORE"
+echo '# Original formal core' >> "$FORMAL_CORE"
+echo 'echo "formal core ok"' >> "$FORMAL_CORE"
+chmod 755 "$FORMAL_CORE"
+
+eval "$(sed -n '/^patch_ip_script()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+
+# 1. 正常 candidate: patch 前合法，patch 后合法 -> 成功原子替换
+CANDIDATE_VALID="$PATCH_TEST_DIR/candidate_valid.sh"
+cat > "$CANDIDATE_VALID" << 'EOF'
+#!/usr/bin/env bash
+# script_version="2.0"
+# IPQuality Check_DNS
+function Check_DNS_IP() {
+    if [ "$1" == "x" ]; then
+        echo 1
+    else
+        echo 0
+    fi
+}
+EOF
+
+if bash -n "$CANDIDATE_VALID" && patch_ip_script "$CANDIDATE_VALID" && bash -n "$CANDIDATE_VALID"; then
+    mv -f "$CANDIDATE_VALID" "$FORMAL_CORE"
+    pass "有效 candidate 通过 patch 及后验 bash -n，成功原子替换正式核心"
+else
+    fail "Core Patch" "合法 candidate patch 或验证失败"
+fi
+
+# 2. 异常 candidate: patch 后语法校验失败 -> 不得覆盖正式核心
+CANDIDATE_BROKEN="$PATCH_TEST_DIR/candidate_broken.sh"
+cat > "$CANDIDATE_BROKEN" << 'EOF'
+#!/usr/bin/env bash
+# script_version="2.1"
+# IPQuality Check_DNS
+youtube[uregion]="  $Font_Red[CN]$Font_Green   "
+if [[ broken syntax unbalanced
+EOF
+
+candidate_replaced=false
+if bash -n "$CANDIDATE_BROKEN" 2>/dev/null && patch_ip_script "$CANDIDATE_BROKEN" 2>/dev/null && bash -n "$CANDIDATE_BROKEN" 2>/dev/null; then
+    mv -f "$CANDIDATE_BROKEN" "$FORMAL_CORE"
+    candidate_replaced=true
+else
+    rm -f "$CANDIDATE_BROKEN"
+fi
+
+if [[ "$candidate_replaced" == "false" ]] && grep -q "Check_DNS_IP" "$FORMAL_CORE"; then
+    pass "破坏性 candidate 校验失败并被拦截，正式核心完整保留不受污染"
+else
+    fail "Core Patch 防御" "破坏性 candidate 未被拦截或正式核心被污染"
+fi
+
+# 12. Debian/Ubuntu-only 系统支持与未知发行版拒绝测试
+echo -e "\n[测试组 12] Debian/Ubuntu-only 系统支持与未知发行版拒绝测试:"
+eval "$(sed -n '/^has_cmd()/,/^}/p' "$REPO_ROOT/install.sh")"
+eval "$(sed -n '/^check_os_support()/,/^}/p' "$REPO_ROOT/install.sh")"
+
+OS_RELEASE_DEBIAN="$TEST_ENV_DIR/os_release_debian"
+echo 'ID=debian' > "$OS_RELEASE_DEBIAN"
+if check_os_support "$OS_RELEASE_DEBIAN" >/dev/null 2>&1; then
+    pass "成功放行 Debian 系统"
+else
+    fail "系统支持" "Debian 被误拦截"
+fi
+
+OS_RELEASE_UBUNTU="$TEST_ENV_DIR/os_release_ubuntu"
+echo 'ID=ubuntu' > "$OS_RELEASE_UBUNTU"
+if check_os_support "$OS_RELEASE_UBUNTU" >/dev/null 2>&1; then
+    pass "成功放行 Ubuntu 系统"
+else
+    fail "系统支持" "Ubuntu 被误拦截"
+fi
+
+OS_RELEASE_ALPINE="$TEST_ENV_DIR/os_release_alpine"
+echo 'ID=alpine' > "$OS_RELEASE_ALPINE"
+if ! check_os_support "$OS_RELEASE_ALPINE" >/dev/null 2>&1; then
+    pass "成功拦截 Alpine Linux 并明确退出非 0"
+else
+    fail "系统支持" "未能拦截 Alpine 系统"
+fi
+
+OS_RELEASE_CENTOS="$TEST_ENV_DIR/os_release_centos"
+echo 'ID=centos' > "$OS_RELEASE_CENTOS"
+if ! check_os_support "$OS_RELEASE_CENTOS" >/dev/null 2>&1; then
+    pass "成功拦截 CentOS/RHEL 系统并明确退出非 0"
+else
+    fail "系统支持" "未能拦截 CentOS 系统"
+fi
+
+# 检查代码库是否彻底移除 Alpine / apk 相关分支
+if ! grep -qiE 'apk add|apk update|command -v apk' "$REPO_ROOT/install.sh" "$REPO_ROOT/ipqa.sh"; then
+    pass "代码库已彻底剔除 apk 相关包管理器映射与安装分支"
+else
+    fail "Alpine 代码残留" "在生产代码中仍检测到 apk 相关逻辑"
 fi
 
 echo -e "\n=============================================================================="

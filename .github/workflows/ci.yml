@@ -21,12 +21,13 @@ jobs:
 
       - name: Run ShellCheck static analysis
         run: |
-          shellcheck -S warning -e SC2034,SC2181,SC1090,SC1091,SC2086 install.sh ipqa.sh
+          shellcheck -S warning -e SC2034,SC2181,SC1090,SC1091,SC2086 install.sh ipqa.sh tests/test_suite.sh
 
       - name: Verify Bash syntax
         run: |
           bash -n install.sh
           bash -n ipqa.sh
+          bash -n tests/test_suite.sh
 
       - name: Run regression test suite
         run: |

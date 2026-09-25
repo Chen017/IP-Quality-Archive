@@ -548,8 +548,8 @@ else
     fail "无变化语义中性化" "检测到不合时宜的正面评语: '$output_summary'"
 fi
 
-# 11. 检测核心 patch 事务原子性与失败回滚测试
-echo -e "\n[测试组 11] 检测核心 patch 事务原子性与失败回滚测试:"
+# 11. 检测核心 candidate 校验、Patch 与替换保护测试
+echo -e "\n[测试组 11] 检测核心 candidate 校验、Patch 与替换保护测试:"
 PATCH_TEST_DIR="$TEST_ENV_DIR/patch_test"
 mkdir -p "$PATCH_TEST_DIR"
 FORMAL_CORE="$PATCH_TEST_DIR/ip.sh"

@@ -450,7 +450,7 @@ if [[ -n "$local_core_src" ]]; then
     tmp_local="$INSTALL_DIR/ip.sh.tmp.$$.$RANDOM"
     cp "$local_core_src" "$tmp_local"
     sed -i 's/\r$//' "$tmp_local" 2>/dev/null || true
-    if bash -n "$tmp_local" 2>/dev/null && patch_ip_script "$tmp_local" && bash -n "$tmp_local" 2>/dev/null && grep -qE "IPQuality|Check_DNS|IP\.Check\.Place|script_version" "$tmp_local" 2>/dev/null; then
+    if [[ $(wc -c < "$tmp_local" 2>/dev/null || echo 0) -ge 3000 ]] && bash -n "$tmp_local" 2>/dev/null && patch_ip_script "$tmp_local" && bash -n "$tmp_local" 2>/dev/null && grep -qE "IPQuality|Check_DNS|IP\.Check\.Place|script_version" "$tmp_local" 2>/dev/null; then
         chmod +x "$tmp_local" 2>/dev/null || true
         mv -f "$tmp_local" "$INSTALL_DIR/ip.sh"
         echo -e "${C_GREEN}✔ 已自本地同步并修补 IPQuality 引擎缓存${C_RESET}"

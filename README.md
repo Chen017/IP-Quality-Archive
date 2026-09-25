@@ -191,7 +191,7 @@ Komari Emerald Insights
 
 ```text
 ~/.ipqa/
-├── config.sh       # 配置文件：检测周期、保留天数、告警阈值等
+├── config.sh       # 配置文件：IPv6、保留天数、告警阈值、自动更新等
 ├── data/
 │   ├── v4/         # IPv4 历史存档：YYYY-MM-DD_HHMMSS.json
 │   ├── v6/         # IPv6 历史存档

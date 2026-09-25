@@ -3748,6 +3748,7 @@ case "$1" in
         echo "  --enable-auto-update    启用每日自动同步更新 IPQA 脚本本身 (默认开启)"
         echo "  --disable-auto-update   禁用每日自动同步更新 IPQA 脚本本身 (保留本地修改与版本)"
         echo "  --auto-update           查看当前脚本自身自动更新状态"
+        echo "  --no-auto-update        与 --check / --cron 搭配，本次执行跳过 IPQA 主脚本自动更新"
         echo "  --test                  运行系统环境、依赖与配置健康自检"
         echo "  --uninstall             干净卸载 IPQA 并清理任务与软链接"
         echo "  --help, -h              显示本帮助信息"

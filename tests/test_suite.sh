@@ -440,7 +440,7 @@ eval "$(sed -n '/^check_os_support()/,/^}/p' "$REPO_ROOT/install.sh")"
 
 OS_RELEASE_DEBIAN="$TEST_ENV_DIR/os_release_debian"
 echo 'ID=debian' > "$OS_RELEASE_DEBIAN"
-if check_os_support "$OS_RELEASE_DEBIAN" >/dev/null 2>&1; then
+if IPQA_OS_RELEASE_FILE="$OS_RELEASE_DEBIAN" check_os_support >/dev/null 2>&1; then
     pass "成功放行 Debian 系统"
 else
     fail "系统支持" "Debian 被误拦截"
@@ -448,7 +448,7 @@ fi
 
 OS_RELEASE_UBUNTU="$TEST_ENV_DIR/os_release_ubuntu"
 echo 'ID=ubuntu' > "$OS_RELEASE_UBUNTU"
-if check_os_support "$OS_RELEASE_UBUNTU" >/dev/null 2>&1; then
+if IPQA_OS_RELEASE_FILE="$OS_RELEASE_UBUNTU" check_os_support >/dev/null 2>&1; then
     pass "成功放行 Ubuntu 系统"
 else
     fail "系统支持" "Ubuntu 被误拦截"
@@ -456,7 +456,7 @@ fi
 
 OS_RELEASE_ALPINE="$TEST_ENV_DIR/os_release_alpine"
 echo 'ID=alpine' > "$OS_RELEASE_ALPINE"
-if ! check_os_support "$OS_RELEASE_ALPINE" >/dev/null 2>&1; then
+if ! IPQA_OS_RELEASE_FILE="$OS_RELEASE_ALPINE" check_os_support >/dev/null 2>&1; then
     pass "成功拦截 Alpine Linux 并明确退出非 0"
 else
     fail "系统支持" "未能拦截 Alpine 系统"
@@ -464,7 +464,7 @@ fi
 
 OS_RELEASE_CENTOS="$TEST_ENV_DIR/os_release_centos"
 echo 'ID=centos' > "$OS_RELEASE_CENTOS"
-if ! check_os_support "$OS_RELEASE_CENTOS" >/dev/null 2>&1; then
+if ! IPQA_OS_RELEASE_FILE="$OS_RELEASE_CENTOS" check_os_support >/dev/null 2>&1; then
     pass "成功拦截 CentOS/RHEL 系统并明确退出非 0"
 else
     fail "系统支持" "未能拦截 CentOS 系统"

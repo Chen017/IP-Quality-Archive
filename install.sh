@@ -242,7 +242,7 @@ has_cmd() {
 
 # 检查操作系统支持 (仅支持 Debian / Ubuntu 系 GNU/Linux 环境)
 check_os_support() {
-    local os_file="${1:-/etc/os-release}"
+    local os_file="${IPQA_OS_RELEASE_FILE:-/etc/os-release}"
     local is_supported=false
     if [[ -f "$os_file" ]]; then
         local os_id="" os_like=""
@@ -251,9 +251,6 @@ check_os_support() {
         if [[ "$os_id" == "debian" || "$os_id" == "ubuntu" ]] || [[ "$os_like" =~ debian|ubuntu ]]; then
             is_supported=true
         fi
-    fi
-    if [[ "$is_supported" == "false" ]] && has_cmd apt-get && [[ "$(uname -s 2>/dev/null)" == "Linux" ]]; then
-        is_supported=true
     fi
 
     if [[ "$is_supported" != "true" ]]; then

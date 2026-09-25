@@ -12,23 +12,14 @@
 </p>
 
 基于 [IPQuality](https://github.com/xykt/IPQuality) 的 Linux IP 质量定时归档与历史监测工具。  
-在保留原始 IP 质量检测能力的基础上，提供 **IPv4 / IPv6 独立归档、历史趋势、变动感知采样、风险变化摘要与异常告警记录**。
+在保留原始 IP 质量检测能力的基础上，提供 **IPv4 / IPv6 独立归档、历史趋势、风险变化摘要与异常告警记录**。
 
 IPQA 可以完全独立使用；如果同时部署 Komari，还可通过配套插件将本地归档同步到服务器，并在 **Komari Emerald Insights** 中获得完整的图形化历史档案与集群质量视图。
 
 ---
 
-## 系统支持 (Supported Systems)
-
-This project targets Debian/Ubuntu based GNU/Linux systems.
-
-Supported systems:
-- **Debian** (10 / 11 / 12+)
-- **Ubuntu** (20.04 / 22.04 / 24.04+)
-
----
-
 ## 一键安装
+脚本支持 Debian/Ubuntu
 
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/install.sh)
@@ -52,9 +43,6 @@ ipqa
 - **历史趋势分析**  
   在终端中查看 IP 类型判定、风控评分（Scamalytics / AbuseIPDB 等）、欺诈标记，以及 Netflix、YouTube、Amazon Prime Video、AI 服务等解锁状态的历史演变。
 
-- **变动感知采样**  
-  查看长期历史时优先保留发生过属性变化的节点，减少固定抽样遗漏关键变化的问题。
-
 - **每日风险摘要**  
   自动归纳近期风险变化，例如：
   - 风控评分明显上升
@@ -77,55 +65,6 @@ ipqa
 
 - **检测核心更新**  
   可通过 `ipqa --update` 更新程序及上游检测核心。
-
----
-
-## 工作方式
-
-```text
-                IPQuality
-                   │
-                   ▼
-          IP Quality Archive
-                   │
-        ┌──────────┴──────────┐
-        │                     │
-        ▼                     ▼
-   IPv4 JSON Archive     IPv6 JSON Archive
-        │                     │
-        └──────────┬──────────┘
-                   │
-                   ▼
-           History / Diff / Alerts
-                   │
-                   ├──► Terminal UI
-                   │
-                   └──► alerts.log
-```
-
-如果接入 Komari：
-
-```text
-IP Quality Archive
-        │
-        │  ~/.ipqa/data/{v4,v6}
-        │  ~/.ipqa/data/alerts.log
-        ▼
-Komari IPQA Alert Report Plugin
-        │
-        ├── Archive Sync
-        ├── Versioned Read-only API
-        ├── Semantic Change Tracking
-        └── Aggregated Alerts
-        │
-        ▼
-Komari Emerald Insights
-        │
-        ├── IPQA Overview
-        ├── Risk Matrix
-        ├── Media / AI Unlock Matrix
-        └── Historical Node Archive
-```
 
 ---
 
@@ -179,79 +118,11 @@ Komari Emerald Insights
 
 ---
 
-## 数据目录
-
-所有配置与数据默认保存在：
-
-```text
-~/.ipqa/
-```
-
-目录结构：
-
-```text
-~/.ipqa/
-├── config.sh       # 配置文件：IPv6、保留天数、告警阈值、自动更新等
-├── data/
-│   ├── v4/         # IPv4 历史存档：YYYY-MM-DD_HHMMSS.json
-│   ├── v6/         # IPv6 历史存档
-│   └── alerts.log  # 变动告警记录
-└── logs/           # 运行日志
-```
-
-这些文件同时构成配套 Komari 插件的数据来源：
-
-```text
-~/.ipqa/data/v4/
-~/.ipqa/data/v6/
-~/.ipqa/data/alerts.log
-```
-
-因此如果需要 Komari 集成，请保留默认目录结构。
-
----
-
 ## Komari Emerald Ecosystem 集成
 
 IPQA 本身不依赖 Komari，可以单独部署和使用。
 
 如果已经使用 Komari，可以按以下方式扩展：
-
-### 1. IPQA 数据同步与告警
-
-安装：
-
-[**komari-plugin-ipqa-alert-report**](https://github.com/Chen017/komari-plugin-ipqa-alert-report)
-
-插件会：
-
-- 增量同步 IPQA 历史归档
-- 提供版本化只读 HTTP API
-- 生成跨天语义差异
-- 汇总风险变化
-- 通过 Komari Notification 发送聚合告警
-
-### 2. 图形化历史与集群概览
-
-搭配：
-
-[**Komari Emerald Insights**](https://github.com/Chen017/komari-theme-emerald-insights)
-
-可在 Resource Insights 和节点档案中查看：
-
-- 集群 IPQA 概览
-- IPv4 / IPv6 当前状态
-- 风险评分矩阵
-- IP 属性变化
-- 流媒体与 AI 解锁状态
-- DNSBL / 邮件相关检测
-- 按日期回溯的历史归档
-- 语义变更时间轴
-- 原始 JSON
-
-### 3. 完整生态
-
-完整项目关系：
 
 ```text
                          Komari
@@ -274,93 +145,7 @@ IPQA 本身不依赖 Komari，可以单独部署和使用。
 - [IPQA Alert Report](https://github.com/Chen017/komari-plugin-ipqa-alert-report)：IPQA 数据同步、历史 API 与告警插件
 - [Availability History](https://github.com/Chen017/komari-plugin-availability-history)：基于事件账本的精确在线率插件
 
----
-
-## 使用建议
-
-### 仅需要终端 IP 质量历史
-
-只安装：
-
-```text
-IP Quality Archive
-```
-
-即可。
-
-### 已使用 Komari，希望集中查看 IPQA
-
-推荐：
-
-```text
-IP Quality Archive
-+
-komari-plugin-ipqa-alert-report
-```
-
-### 希望获得完整可视化体验
-
-推荐：
-
-```text
-IP Quality Archive
-+
-komari-plugin-ipqa-alert-report
-+
-Komari Emerald Insights
-```
-
 Availability History 与 IPQA 功能互相独立，不是 IPQA 的必需依赖。
-
----
-
-## 更新与自动同步
-
-### 手动全量更新
-
-一键从 GitHub 更新 IPQA 主程序与检测核心：
-
-```bash
-ipqa --update
-```
-
-### 脚本自身自动更新管理
-
-IPQA 默认在每日定时检测（或打开交互菜单）时，自动静默同步最新的 IPQA 管理脚本与上游检测核心。如果您希望**保留对 `ipqa.sh` 本地的修改**或在受限网络环境下避免频繁拉取 GitHub，可通过命令行随时禁用或重新开启脚本本身的自动更新（上游检测核心不受影响，仍正常每日检测更新）：
-
-- **禁用脚本自动更新**：
-  ```bash
-  ipqa --disable-auto-update
-  ```
-- **启用脚本自动更新（恢复默认）**：
-  ```bash
-  ipqa --enable-auto-update
-  ```
-- **查看当前自动更新状态**：
-  ```bash
-  ipqa --auto-update
-  ```
-- **单次免更新执行**：
-  ```bash
-  ipqa --check --no-auto-update
-  ipqa --cron --no-auto-update
-  ```
-
-更新不会改变已有历史归档的用途；如涉及数据结构升级，请以对应 Release / README 说明为准。
-
----
-
-## 卸载
-
-```bash
-ipqa --uninstall
-```
-
-卸载前如需保留历史记录，请自行备份：
-
-```text
-~/.ipqa/data/
-```
 
 ---
 
@@ -368,10 +153,6 @@ ipqa --uninstall
 
 - [IPQuality](https://github.com/xykt/IPQuality) — IP 质量检测核心
 - [Komari](https://github.com/komari-monitor/komari) — 轻量服务器监控平台
-- [Komari Emerald Insights](https://github.com/Chen017/komari-theme-emerald-insights) — Resource Insights 前端主题
-- [Komari IPQA Alert Report](https://github.com/Chen017/komari-plugin-ipqa-alert-report) — IPQA 数据集成与告警插件
-- [Komari Availability History](https://github.com/Chen017/komari-plugin-availability-history) — 精确在线率事件账本插件
-- [Komari Emerald Suite](https://github.com/Chen017/komari-emerald-suite) — 配套生态总览
 
 ---
 

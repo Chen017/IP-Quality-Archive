@@ -408,11 +408,11 @@ get_cron_friendly_name() {
         else
             echo "每天 (北京 04:00)"
         fi
-    elif [[ "$cron_str" =~ ^[0-9]+[[:space:]]+$local_h[[:space:]]+\*[[:space:]]+\*[[:space:]]+\* ]]; then
+    elif [[ "$cron_str" =~ ^[0-9]+[[:space:]]+${local_h}[[:space:]]+\*[[:space:]]+\*[[:space:]]+\* ]]; then
         echo "每天 (本机固定 $local_h:00)"
-    elif [[ "$cron_str" =~ ^[0-9]+[[:space:]]+$local_h[[:space:]]+\*/3 ]]; then
+    elif [[ "$cron_str" =~ ^[0-9]+[[:space:]]+${local_h}[[:space:]]+\*/3 ]]; then
         echo "每 3 天 (本机固定 $local_h:00)"
-    elif [[ "$cron_str" =~ ^[0-9]+[[:space:]]+$local_h[[:space:]]+\*/7 ]]; then
+    elif [[ "$cron_str" =~ ^[0-9]+[[:space:]]+${local_h}[[:space:]]+\*/7 ]]; then
         echo "每 7 天 (本机固定 $local_h:00)"
     else
         local schedule
@@ -2890,7 +2890,7 @@ show_alerts_history() {
             echo ""
             read -r -p "确认清空全部风险变动日志吗？(y/N): " confirm_clear
             if [[ "$confirm_clear" =~ ^[Yy]$ ]]; then
-                > "$ALERT_LOG"
+                : > "$ALERT_LOG"
                 echo -e "${C_GREEN}✔ 告警日志已成功清空！${C_RESET}"
                 sleep 0.8
                 break
@@ -3075,7 +3075,7 @@ cleanup_data() {
             fi
             ;;
         6)
-            > "$ALERT_LOG"
+            : > "$ALERT_LOG"
             echo -e "\n${C_GREEN}告警日志已清空！${C_RESET}"
             ;;
         0) return ;;

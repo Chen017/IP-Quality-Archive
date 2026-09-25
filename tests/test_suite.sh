@@ -27,6 +27,13 @@ echo "==========================================================================
 echo "开始运行 IPQA 自动化回归测试"
 echo "=============================================================================="
 
+# N-06: 严格沙箱隔离测试环境，杜绝污染或修改真实的 ~/.ipqa
+TEST_ENV_DIR="$(mktemp -d 2>/dev/null || echo "/tmp/ipqa_test.$$")"
+export IPQA_DIR="$TEST_ENV_DIR/ipqa_home"
+export IPQA_HOME="$IPQA_DIR"
+mkdir -p "$IPQA_DIR"
+trap 'rm -rf "$TEST_ENV_DIR"' EXIT
+
 # 1. 语法检查测试 (bash -n)
 echo -e "\n[测试组 1] 语法与结构完整性检查:"
 if bash -n "$REPO_ROOT/install.sh"; then
@@ -41,29 +48,32 @@ else
     fail "ipqa.sh 语法校验" "发现语法错误"
 fi
 
-# 2. 危险路径检测测试 (M-04)
-echo -e "\n[测试组 2] 危险路径防护 (M-04):"
-TEST_ENV_DIR="$(mktemp -d 2>/dev/null || echo "/tmp/ipqa_test.$$")"
-mkdir -p "$TEST_ENV_DIR/home/testuser"
-
-is_dangerous_path() {
-    local target
-    target=$(cd "$1" 2>/dev/null && pwd -P || true)
-    [[ -z "$target" ]] && target="$1"
-    target="${target%/}"
-    [[ -z "$target" ]] && return 0
-    case "$target" in
-        ""|"/"|"/root"|"/bin"|"/sbin"|"/usr"|"/usr/bin"|"/usr/local"|"/usr/local/bin"|"/etc"|"/var"|"/home"|"$HOME")
-            return 0 ;;
-        *)
-            return 1 ;;
-    esac
-}
+# 2. 生产危险路径检测测试 (M-04A, M-04B, S-14A: 直接抽取测试生产代码)
+echo -e "\n[测试组 2] 生产危险路径防护测试 (M-04A, M-04B):"
+eval "$(sed -n '/^is_dangerous_path()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 
 if is_dangerous_path "/"; then
     pass "正确拦截根目录 '/'"
 else
     fail "危险路径检测" "未能拦截 '/'"
+fi
+
+if is_dangerous_path "/usr/local"; then
+    pass "正确拦截关键系统路径 '/usr/local' (M-04A)"
+else
+    fail "危险路径检测" "未能拦截 '/usr/local'"
+fi
+
+if is_dangerous_path "/usr/local/bin"; then
+    pass "正确拦截系统命令路径 '/usr/local/bin' (M-04A)"
+else
+    fail "危险路径检测" "未能拦截 '/usr/local/bin'"
+fi
+
+if is_dangerous_path "/var/lib"; then
+    pass "正确拦截系统数据路径 '/var/lib' (M-04A)"
+else
+    fail "危险路径检测" "未能拦截 '/var/lib'"
 fi
 
 if is_dangerous_path "$HOME"; then
@@ -72,10 +82,16 @@ else
     fail "危险路径检测" "未能拦截 \$HOME"
 fi
 
-if ! is_dangerous_path "$TEST_ENV_DIR/ipqa"; then
-    pass "正常放行合法安装路径 '$TEST_ENV_DIR/ipqa'"
+if is_dangerous_path "$HOME/.local"; then
+    pass "正确拦截用户核心目录 '\$HOME/.local' (M-04A)"
 else
-    fail "危险路径检测" "误判了合法路径"
+    fail "危险路径检测" "未能拦截 '\$HOME/.local'"
+fi
+
+if ! is_dangerous_path "$IPQA_DIR"; then
+    pass "正常放行合法安装路径 '$IPQA_DIR'"
+else
+    fail "危险路径检测" "误判了合法测试路径"
 fi
 
 # 3. 字段解析与空列不偏移测试 (M-13)
@@ -108,104 +124,161 @@ else
     fail "空字段解析" "字段发生偏移: city='$t_city', region='$t_region', type='$t_type'"
 fi
 
-# 4. 风险因子与评分边界测试 (M-14, M-15, S-18)
-echo -e "\n[测试组 4] 风险因子与评分边界值 (M-14, M-15, S-18):"
-empty_factor_json='{"Factor": {}}'
-tested_count=$(echo "$empty_factor_json" | jq -r '
-    .Factor as $f |
-    ["Proxy"] | map(
-        . as $fac |
-        [ "IP2LOCATION", "ipapi" ] as $engs |
-        ($engs | map(select($f[$fac][.] != null and $f[$fac][.] != "--" and $f[$fac][.] != "")) | length)
-    )[0]
-')
-
-if [[ "$tested_count" -eq 0 ]]; then
-    pass "因子无数据库支持时检出测试数为 0 (正确识别无数据)"
-else
-    fail "因子无数据检测" "测试数预期为 0，实际为 $tested_count"
-fi
-
-empty_mail_json='{"Mail": {"DNSBlacklist": {"Total": 0, "Clean": 0, "Blacklisted": 0}}}'
-dnsbl_total=$(echo "$empty_mail_json" | jq -r '.Mail.DNSBlacklist.Total // 0')
-if [[ "$dnsbl_total" -eq 0 ]]; then
-    pass "DNSBL Total=0 时不会误判为全部干净通过"
-else
-    fail "DNSBL 判定" "Total 预期为 0"
-fi
-
-# 5. 配置键值安全解析测试 (S-05)
-echo -e "\n[测试组 5] 配置安全键值解析 (S-05):"
-sample_config="$TEST_ENV_DIR/config.sh"
-cat > "$sample_config" << 'EOF'
-CHECK_INTERVAL_HOURS="24"
+# 4. 生产配置安全解析与 Legacy 兼容测试 (N-05, S-05, S-14A)
+echo -e "\n[测试组 4] 配置解析与 Legacy AUTO_UPDATE 兼容测试 (N-05, S-05):"
+CONFIG_FILE="$IPQA_DIR/config.sh"
+cat > "$CONFIG_FILE" << 'EOF'
+AUTO_UPDATE="false"
 SCORE_DIFF_THRESHOLD="15"
-# 尝试命令注入
-INJECT_VAR="hello; echo hacked"
-MALICIOUS_CMD=$(rm -rf /)
 EOF
 
-CFG_CHECK_HOURS="24"
-CFG_DIFF_THRES="10"
+# 载入生产 load_config 函数并执行
+eval "$(sed -n '/^load_config()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+load_config
 
-while IFS='=' read -r raw_key raw_val || [[ -n "$raw_key" ]]; do
-    raw_key=$(echo "$raw_key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-    [[ -z "$raw_key" || "$raw_key" =~ ^# ]] && continue
-    raw_val=$(echo "$raw_val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^["'\'']//' -e 's/["'\'']$//')
-    case "$raw_key" in
-        CHECK_INTERVAL_HOURS) [[ "$raw_val" =~ ^[0-9]+$ ]] && CFG_CHECK_HOURS="$raw_val" ;;
-        SCORE_DIFF_THRESHOLD) [[ "$raw_val" =~ ^[0-9]+$ ]] && CFG_DIFF_THRES="$raw_val" ;;
-    esac
-done < "$sample_config"
-
-if [[ "$CFG_CHECK_HOURS" == "24" && "$CFG_DIFF_THRES" == "15" ]]; then
-    pass "配置安全解析成功且防止命令执行"
+if [[ "$AUTO_UPDATE_SCRIPT" == "false" ]]; then
+    pass "成功从旧版 AUTO_UPDATE=false 回退解析并关闭脚本自动更新 (N-05)"
 else
-    fail "配置安全解析" "解析结果异常: $CFG_CHECK_HOURS / $CFG_DIFF_THRES"
+    fail "旧版配置兼容" "AUTO_UPDATE_SCRIPT 预期为 false，实际为 $AUTO_UPDATE_SCRIPT"
 fi
 
-# 6. Cron Quoting & Validation (M-18, M-19, M-20, M-21)
-echo -e "\n[测试组 6] Cron 路径转义与表达式校验 (M-18, M-19, M-20, M-21):"
-cron_test_path="/opt/my dir/ipqa.sh"
-cron_log_path="/opt/my dir/logs/ipqa.log"
-cron_line="0 * * * * [ \"\$(TZ='Asia/Shanghai' date +\\%H)\" = \"04\" ] && \"$cron_test_path\" --cron >> \"$cron_log_path\" 2>&1"
-
-if [[ "$cron_line" =~ \"/opt/my\ dir/ipqa\.sh\" ]] && [[ "$cron_line" =~ \"/opt/my\ dir/logs/ipqa\.log\" ]]; then
-    pass "含空格路径在 Cron 规则中被正确双引号包裹"
+if [[ "$SCORE_DIFF_THRESHOLD" == "15" ]]; then
+    pass "正常解析数值配置 SCORE_DIFF_THRESHOLD=15"
 else
-    fail "Cron 路径包裹" "路径未正确引用: $cron_line"
+    fail "配置解析" "数值解析异常: $SCORE_DIFF_THRESHOLD"
 fi
 
-# 验证无效 Cron 表达式过滤
-invalid_expr="0 4 * * * * *" # 6 fields
-read -r -a fields <<< "$invalid_expr"
-if [[ ${#fields[@]} -ne 5 ]]; then
-    pass "成功拦截非 5 位的非法 Cron 表达式"
+# 5. 时间范围过滤与关键帧自适应降采样测试 (N-02, N-03, S-03)
+echo -e "\n[测试组 5] 时间范围过滤与关键帧采样测试 (N-02, N-03):"
+SAMPLE_DIR="$TEST_ENV_DIR/sample_archives"
+mkdir -p "$SAMPLE_DIR"
+
+eval "$(sed -n '/^validate_json()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^load_archive_files()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+
+# 创建测试数据：5 天前旧文件与 1 小时前新文件
+old_ts=$(date -d "5 days ago" +%Y-%m-%d_%H%M%S 2>/dev/null || echo "2026-09-01_120000")
+new_ts=$(date -d "1 hour ago" +%Y-%m-%d_%H%M%S 2>/dev/null || echo "2026-09-25_110000")
+
+echo '{"Head":{"IP":"1.1.1.1"},"Type":"isp","Score":10,"Factor":{},"Media":{},"Mail":{"Port25":"Yes","DNSBlacklist":{"Blacklisted":0}}}' > "$SAMPLE_DIR/${old_ts}.json"
+echo '{"Head":{"IP":"1.1.1.1"},"Type":"isp","Score":20,"Factor":{},"Media":{},"Mail":{"Port25":"Yes","DNSBlacklist":{"Blacklisted":0}}}' > "$SAMPLE_DIR/${new_ts}.json"
+
+# 测试 24 小时过滤 (range_type=1)
+mapfile -t files_24h < <(load_archive_files "$SAMPLE_DIR" 1 10)
+if [[ ${#files_24h[@]} -eq 1 && "${files_24h[0]}" == *"${new_ts}.json"* ]]; then
+    pass "load_archive_files 正确完成 24h 时间范围过滤并排除历史文件 (N-02)"
 else
-    fail "Cron 校验" "未能拦截 6 位 Cron 表达式"
+    fail "时间范围过滤" "预期仅匹配最新文件，实际结果数: ${#files_24h[@]}"
 fi
 
-# 7. 日志安全脱敏与轮转测试 (S-16, S-17)
-echo -e "\n[测试组 7] 日志脱敏与轮转 (S-16, S-17):"
-raw_msg=$(printf "YouTube\x1b[31m Region|Changed\nNew line")
-safe_msg=$(echo "$raw_msg" | sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' | tr '\r\n' ' ' | tr '|' '/')
+# 测试关键帧自适应降采样 (N-03: 当变动点数超过 max_points 时不丢失中间点)
+SAMPLING_DIR="$TEST_ENV_DIR/sampling_test"
+mkdir -p "$SAMPLING_DIR"
+for ((i=1; i<=10; i++)); do
+    f_date=$(printf "2026-09-%02d_120000" "$i")
+    echo "{\"Head\":{\"IP\":\"1.1.1.1\"},\"Type\":\"t$i\",\"Score\":$((i*10)),\"Factor\":{},\"Media\":{},\"Mail\":{\"Port25\":\"Yes\",\"DNSBlacklist\":{\"Blacklisted\":$i}}}" > "$SAMPLING_DIR/${f_date}.json"
+done
 
-if [[ ! "$safe_msg" =~ "|" && ! "$safe_msg" =~ $'\n' && ! "$safe_msg" =~ $'\x1b' ]]; then
-    pass "告警消息成功过滤 ANSI 颜色码、换行符和竖线分隔符"
+mapfile -t sampled_res < <(load_archive_files "$SAMPLING_DIR" 5 5)
+if [[ ${#sampled_res[@]} -eq 5 ]]; then
+    pass "关键帧变动点超过上限时成功降采样至预期 5 个槽位 (N-03)"
 else
-    fail "日志脱敏" "消息未完全脱敏: '$safe_msg'"
+    fail "关键帧降采样" "预期返回 5 个采样点，实际返回 ${#sampled_res[@]} 个"
 fi
 
-# 8. 自检指令测试 (Q-03)
-echo -e "\n[测试组 8] 系统自检指令 (--test):"
+# 6. Cron 正则与路径转义测试 (N-01, M-19, M-20, UI-01)
+echo -e "\n[测试组 6] Cron 规则识别、转义与半小时时区换算 (N-01, M-19, M-20, UI-01):"
+cron_cmd_quoted='"../ipqa" --cron'
+cron_cmd_unquoted='../ipqa.sh --cron'
+cron_regex='ipqa(\.sh)?["'\''[:space:]]+--cron'
+
+if [[ "$cron_cmd_quoted" =~ $cron_regex ]] && [[ "$cron_cmd_unquoted" =~ $cron_regex ]]; then
+    pass "Cron 正则成功同时兼容带引号与不带引号的执行指令 (N-01)"
+else
+    fail "Cron 正则匹配" "未能正确匹配引号规则"
+fi
+
+eval "$(sed -n '/^get_beijing_4am_local_hour()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^get_beijing_00_local_minute()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^get_cron_friendly_name()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+
+# 验证友好名称解析 (UI-01)
+dyn_cron='30 * * * * [ "$(TZ='\''Asia/Shanghai'\'' date +\%H:\%M)" = "04:00" ] && "/usr/local/bin/ipqa" --cron'
+friendly=$(get_cron_friendly_name "$dyn_cron")
+if [[ "$friendly" == *"北京 04:00"* ]]; then
+    pass "正确识别动态北京时间 Cron 规则的友好描述 (UI-01): '$friendly'"
+else
+    fail "Cron 友好描述" "未能识别动态规则: $friendly"
+fi
+
+# 7. 生产日志脱敏与终端控制符过滤测试 (S-17)
+echo -e "\n[测试组 7] 终端控制字符彻底脱敏测试 (S-17):"
+ALERT_LOG="$IPQA_DIR/alerts.log"
+LOG_FILE="$IPQA_DIR/ipqa.log"
+eval "$(sed -n '/^log_msg()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^rotate_logs_if_needed()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^add_alert()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+
+test_payload=$(printf "Test\x1b]0;TitleHack\x07\x1b[2J\x1b[31;1mCRITICAL|INJECT\nNEXTLINE")
+add_alert "CRITICAL" "$test_payload" "IPv4"
+
+logged_alert=$(cat "$ALERT_LOG" 2>/dev/null || echo "")
+if [[ ! "$logged_alert" =~ TitleHack && ! "$logged_alert" =~ $'\x1b' && ! "$logged_alert" =~ $'\n' ]]; then
+    pass "add_alert 彻底剔除 OSC/CSI 终端序列与控制符注入 (S-17)"
+else
+    fail "日志脱敏" "检测到残留控制字符: '$logged_alert'"
+fi
+
+# 8. 生产原子互斥锁与 Stale-Lock 恢复测试 (M-08A, M-08B)
+echo -e "\n[测试组 8] 生产原子互斥锁与 Stale-Lock 恢复 (M-08A, M-08B):"
+eval "$(sed -n '/^acquire_lock()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^release_lock()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+
+if acquire_lock "test_mutex"; then
+    pass "成功获取主原子锁"
+else
+    fail "原子锁" "未能获取空闲锁"
+fi
+
+# 测试可重入嵌套深度
+if acquire_lock "test_mutex"; then
+    pass "支持同一进程可重入嵌套加锁 (深度加深)"
+else
+    fail "原子锁" "可重入加锁失败"
+fi
+
+release_lock "test_mutex"
+# 此时深度应仍为 1，锁目录仍应存在
+if [[ -d "$IPQA_DIR/.lock_test_mutex" ]]; then
+    pass "内层解锁保留外层锁状态"
+else
+    fail "原子锁" "内层解锁错误移除了外层锁目录"
+fi
+
+release_lock "test_mutex"
+if [[ ! -d "$IPQA_DIR/.lock_test_mutex" ]]; then
+    pass "外层解锁彻底释放锁目录"
+else
+    fail "原子锁" "外层解锁未释放锁目录"
+fi
+
+# 测试 Stale-Lock 恢复
+mkdir -p "$IPQA_DIR/.lock_test_mutex"
+echo "999999" > "$IPQA_DIR/.lock_test_mutex/pid" # 假设一个已不存在的 PID
+if acquire_lock "test_mutex"; then
+    pass "检测到失效 PID 时成功原子竞争并夺取 Stale 锁 (M-08B)"
+    release_lock "test_mutex"
+else
+    fail "Stale 锁恢复" "未能恢复死亡进程的锁"
+fi
+
+# 9. 系统自检指令测试 (Q-03, N-06: 沙箱隔离下运行)
+echo -e "\n[测试组 9] 系统环境与自检指令 (--test):"
 if bash "$REPO_ROOT/ipqa.sh" --test >/dev/null 2>&1; then
-    pass "ipqa --test 成功运行并返回状态 0"
+    pass "ipqa --test 在隔离测试环境下成功运行并返回 0 (N-06)"
 else
     fail "系统自检" "ipqa --test 返回非 0 状态"
 fi
-
-# 清理测试临时目录
-rm -rf "$TEST_ENV_DIR"
 
 echo -e "\n=============================================================================="
 echo "测试结果汇总: 总计 $TESTS_RUN 项测试, 通过: $TESTS_PASSED, 失败: $TESTS_FAILED"

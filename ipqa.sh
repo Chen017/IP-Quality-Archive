@@ -482,6 +482,13 @@ patch_ip_script() {
     # 1. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
     sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$target" 2>/dev/null || true
 
+    # 2. 修复上游 IPQS JSON 序列化读取错误数组，导致有效分数被写成 null
+    sed -i 's/${ipapi\[ipqs\]:-null}/${ipqs[score]:-null}/g' "$target" 2>/dev/null || true
+
+    # 3. 修复 DB-IP 使用 /self 导致 IPv6 检测可能写入请求出口 IPv4；显式查询目标 IP
+    sed -i '/^if \[\[ \$IP == \*:\* \]\];then$/{N;N;s/^if \[\[ \$IP == \*:\* \]\];then\ntmpcurlarg=""\nfi$//;}' "$target" 2>/dev/null || true
+    sed -i 's#https://api\.db-ip\.com/v2/\$tmpurl/self?convertCurrencies#https://api.db-ip.com/v2/$tmpurl/$IP?convertCurrencies#g' "$target" 2>/dev/null || true
+
     return 0
 }
 

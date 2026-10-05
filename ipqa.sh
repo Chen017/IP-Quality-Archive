@@ -482,6 +482,15 @@ patch_ip_script() {
     # 1. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
     sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$target" 2>/dev/null || true
 
+    # 2. 修复上游 IPQS JSON 序列化读取错误数组，导致有效分数被写成 null
+    sed -i 's/${ipapi\[ipqs\]:-null}/${ipqs[score]:-null}/g' "$target" 2>/dev/null || true
+
+    # 3. 修复 DB-IP IPv6 检测可能拿到 IPv4：保留 /self 访客查询语义，但强制使用目标协议族
+    sed -i '/^if \[\[ \$IP == \*:\* \]\];then$/{N;N;s/^if \[\[ \$IP == \*:\* \]\];then\ntmpcurlarg=""\nfi$//;}' "$target" 2>/dev/null || true
+    sed -i 's#https://api\.db-ip\.com/v2/\$tmpurl/\$IP?convertCurrencies#https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies#g' "$target" 2>/dev/null || true
+    sed -i '/api\.db-ip\.com\/v2\/\$tmpurl\/self?convertCurrencies/s/curl \$tmpcurlarg -sL -m 10/curl $tmpcurlarg -sL -$1 -m 10/' "$target" 2>/dev/null || true
+    sed -i 's/^db_dbip$/db_dbip $2/' "$target" 2>/dev/null || true
+
     return 0
 }
 
@@ -531,6 +540,9 @@ validate_ipqa_candidate() {
 
 ensure_ip_script() {
     if [[ -f "$IP_SCRIPT" ]]; then
+        # Existing cached cores must also receive newly added upstream bug patches.
+        patch_ip_script "$IP_SCRIPT" || return 1
+        bash -n "$IP_SCRIPT" 2>/dev/null || return 1
         return 0
     fi
 

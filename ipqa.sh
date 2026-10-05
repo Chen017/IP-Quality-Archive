@@ -701,6 +701,39 @@ validate_json() {
     jq empty "$file" >/dev/null 2>&1
 }
 
+# Reject empty/partial core output before publishing a daily archive.
+validate_ipqa_report() {
+    local file="$1" family="$2" ip octet
+    validate_json "$file" || return 1
+    ip=$(jq -er 'select(type == "object") | .Head.IP | select(type == "string" and length > 0)' "$file" 2>/dev/null) || return 1
+    if [[ "$family" == "v4" ]]; then
+        [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+        local -a octets
+        IFS=. read -r -a octets <<< "$ip"
+        for octet in "${octets[@]}"; do
+            (( 10#$octet <= 255 )) || return 1
+        done
+    else
+        [[ "$ip" == *:* && "$ip" =~ ^[[:xdigit:]:.]+$ && "$ip" != *:::* ]] || return 1
+    fi
+}
+
+media_is_blocked() {
+    local status="${1,,}"
+    [[ "$status" =~ (未解锁|不解锁|失败|屏蔽|不支持|无法|not[[:space:]]+(unlocked|supported|available)|^no($|[[:space:]])|blocked|failed|unsupported|中国|china|禁会员|noprem) ]]
+}
+
+get_latest_fleet_archive() {
+    local latest="" candidate
+    for candidate in "$(get_latest_archive "$V4_DIR")" "$(get_latest_archive "$V6_DIR")"; do
+        [[ -z "$candidate" ]] && continue
+        if [[ -z "$latest" || "$(basename "$candidate")" > "$(basename "$latest")" ]]; then
+            latest="$candidate"
+        fi
+    done
+    [[ -n "$latest" ]] && printf '%s\n' "$latest"
+}
+
 # 获取最新一份有效 JSON (S-03)
 get_latest_archive() {
     local dir="$1"
@@ -1194,14 +1227,14 @@ run_check() {
     # 执行 IPv4 检测并输出到临时 JSON (S-03)
     bash "$IP_SCRIPT" -4 -y -n -p -o "$v4_tmp" >/dev/null 2>&1
 
-    if validate_json "$v4_tmp"; then
+    if validate_ipqa_report "$v4_tmp" v4; then
         mv "$v4_tmp" "$v4_out"
         v4_success=true
         [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPv4 检测完成并已有效存档: $(basename "$v4_out")${C_RESET}"
         log_msg "INFO" "IPv4 检测成功: $v4_out"
         compare_and_alert "$V4_DIR" "$v4_out" "IPv4"
     else
-        rm -f "$v4_tmp" "$v4_out" 2>/dev/null || true
+        rm -f "$v4_tmp" 2>/dev/null || true
         [[ "$quiet" == "false" ]] && echo -e "${C_YELLOW}⚠ IPv4 检测未生成有效 JSON (可能网络超时或接口受限)${C_RESET}"
         log_msg "WARN" "IPv4 检测生成数据无效，已自动清理"
     fi
@@ -1225,7 +1258,7 @@ run_check() {
         log_msg "INFO" "开始执行 IPv6 检测: $ts"
         bash "$IP_SCRIPT" -6 -y -n -p -o "$v6_tmp" >/dev/null 2>&1
 
-        if validate_json "$v6_tmp"; then
+        if validate_ipqa_report "$v6_tmp" v6; then
             local v6_ip
             v6_ip=$(jq -r '.Head.IP // empty' "$v6_tmp")
             if [[ -n "$v6_ip" && "$v6_ip" != "null" ]]; then
@@ -1237,7 +1270,7 @@ run_check() {
                 HAS_V6="true"
                 save_config
             else
-                rm -f "$v6_tmp" "$v6_out" 2>/dev/null || true
+                rm -f "$v6_tmp" 2>/dev/null || true
                 # M-11: 有效 JSON 但 IP 为空时，核实宿主是否具备 IPv6 能力
                 if host_supports_ipv6; then
                     [[ "$quiet" == "false" ]] && echo -e "${C_YELLOW}⚠ 本机具备 IPv6 地址但检测核心未返回有效 IPv6，保留探测状态${C_RESET}"
@@ -1251,7 +1284,7 @@ run_check() {
                 fi
             fi
         else
-            rm -f "$v6_tmp" "$v6_out" 2>/dev/null || true
+            rm -f "$v6_tmp" 2>/dev/null || true
             # M-11: 区分网络临时失败与本机是否真正支持 IPv6
             if host_supports_ipv6; then
                 [[ "$quiet" == "false" ]] && echo -e "${C_YELLOW}⚠ 本机具备 IPv6 但检测未生成有效数据 (可能网络超时)，保留探测状态${C_RESET}"
@@ -2140,7 +2173,9 @@ render_media_unlock_table() {
             local mtype
             mtype=$(jq -r ".Media.$svc.Type // \"\"" "$f")
 
-            if [[ "$status" =~ (解锁|Yes|Native) ]]; then
+            if media_is_blocked "$status"; then
+                printf "  %b   " "$SYM_DOT_RED"
+            elif [[ "$status" =~ (解锁|Yes|Native) ]]; then
                 if [[ "$mtype" =~ (DNS|ViaDNS|Proxy|代理解锁) ]]; then
                     printf "  %b   " "$SYM_DOT_YELLOW"
                 else
@@ -2642,7 +2677,9 @@ render_single_archive_card() {
         [[ "$reg" == "--" ]] && reg=""
 
         local st_badge=""
-        if [[ "$st" =~ (解锁|Yes|Native) ]]; then
+        if media_is_blocked "$st"; then
+            st_badge="${C_RED}✗ $st${C_RESET}"
+        elif [[ "$st" =~ (解锁|Yes|Native) ]]; then
             if [[ "$m_type" =~ (DNS|ViaDNS|代理解锁) ]]; then
                 # DNS 分流解锁：黄色高亮
                 st_badge="${C_YELLOW}⚡ DNS解锁${C_RESET}"
@@ -3371,7 +3408,7 @@ show_status() {
     count_v6=$(count_json_files "$V6_DIR")
 
     local latest_file
-    latest_file=$(find "$V4_DIR" "$V6_DIR" -maxdepth 1 -name '*.json' 2>/dev/null | sort -r | head -n 1)
+    latest_file=$(get_latest_fleet_archive)
     if [[ -n "$latest_file" ]]; then
         last_check=$(fmt_timestamp "$(basename "$latest_file" .json)")
     fi

@@ -645,6 +645,46 @@ else
 fi
 
 echo -e "\n=============================================================================="
+echo "测试结果汇总前，执行归档与解锁回归检查"
+eval "$(sed -n '/^validate_json()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^validate_ipqa_report()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^media_is_blocked()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^get_latest_archive()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^get_latest_fleet_archive()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+printf '{}' > "$TEST_ENV_DIR/empty.json"
+printf '{"Head":{"IP":"192.0.2.1"}}' > "$TEST_ENV_DIR/valid4.json"
+printf '{"Head":{"IP":"2001:db8::1"}}' > "$TEST_ENV_DIR/valid6.json"
+printf '{"Head":{"IP":"999.0.0.1"}}' > "$TEST_ENV_DIR/invalid4.json"
+if ! validate_ipqa_report "$TEST_ENV_DIR/empty.json" v4; then pass "空 JSON 不再作为成功归档"; else fail "空报告" "错误接受空 JSON"; fi
+if validate_ipqa_report "$TEST_ENV_DIR/valid4.json" v4 && validate_ipqa_report "$TEST_ENV_DIR/valid6.json" v6; then pass "有效双栈报告通过基本校验"; else fail "报告校验" "有效报告被拒绝"; fi
+if ! validate_ipqa_report "$TEST_ENV_DIR/valid6.json" v4 && ! validate_ipqa_report "$TEST_ENV_DIR/valid4.json" v6 && ! validate_ipqa_report "$TEST_ENV_DIR/invalid4.json" v4; then pass "拒绝协议错误及超出范围的 IP"; else fail "IP 校验" "接受错误地址"; fi
+if media_is_blocked '未解锁' && media_is_blocked 'Not Unlocked' && ! media_is_blocked 'DNS解锁'; then pass "否定解锁状态优先于成功关键词"; else fail "解锁校验" "否定状态被误判"; fi
+V4_DIR="$TEST_ENV_DIR/latest/v4"
+V6_DIR="$TEST_ENV_DIR/latest/v6"
+mkdir -p "$V4_DIR" "$V6_DIR"
+cp "$TEST_ENV_DIR/valid4.json" "$V4_DIR/2026-10-05_040000.json"
+cp "$TEST_ENV_DIR/valid6.json" "$V6_DIR/2026-10-04_040000.json"
+if [[ "$(get_latest_fleet_archive)" == "$V4_DIR/2026-10-05_040000.json" ]]; then pass "跨协议最新报告按时间选择"; else fail "最新报告" "旧 IPv6 覆盖较新 IPv4"; fi
+if (
+    eval "$(sed -n '/^run_check()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+    acquire_lock() { return 0; }
+    cleanup_main_lock() { :; }
+    load_config() { :; }
+    ensure_ip_script() { return 0; }
+    auto_update_if_needed() { :; }
+    log_msg() { :; }
+    save_config() { :; }
+    compare_and_alert() { :; }
+    date() { if [[ "${1:-}" == '+%Y-%m-%d_%H%M%S' ]]; then echo '2026-10-05_040000'; else command date "$@"; fi; }
+    HAS_V6=false
+    V6_CHECK_COUNT=0
+    V6_PROBE_INTERVAL=10
+    KEEP_MAX_ARCHIVES=0
+    IP_SCRIPT="$TEST_ENV_DIR/empty-core.sh"
+    printf '#!/bin/bash\nwhile (( $# )); do if [[ "$1" == "-o" ]]; then printf "{}" > "$2"; break; fi; shift; done\n' > "$IP_SCRIPT"
+    if run_check true; then exit 1; fi
+    validate_ipqa_report "$V4_DIR/2026-10-05_040000.json" v4
+); then pass "失败重试返回失败且保留同时间戳有效归档"; else fail "失败重试" "旧报告丢失或返回假成功"; fi
 echo "测试结果汇总: 总计 $TESTS_RUN 项测试, 通过: $TESTS_PASSED, 失败: $TESTS_FAILED"
 echo "=============================================================================="
 

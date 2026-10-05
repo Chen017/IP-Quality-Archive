@@ -676,9 +676,14 @@ if (
     save_config() { :; }
     compare_and_alert() { :; }
     date() { if [[ "${1:-}" == '+%Y-%m-%d_%H%M%S' ]]; then echo '2026-10-05_040000'; else command date "$@"; fi; }
+    # These globals are consumed by the production run_check function extracted above.
+    # shellcheck disable=SC2034
     HAS_V6=false
+    # shellcheck disable=SC2034
     V6_CHECK_COUNT=0
+    # shellcheck disable=SC2034
     V6_PROBE_INTERVAL=10
+    # shellcheck disable=SC2034
     KEEP_MAX_ARCHIVES=0
     IP_SCRIPT="$TEST_ENV_DIR/empty-core.sh"
     printf '#!/bin/bash\nwhile (( $# )); do if [[ "$1" == "-o" ]]; then printf "{}" > "$2"; break; fi; shift; done\n' > "$IP_SCRIPT"

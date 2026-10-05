@@ -485,9 +485,11 @@ patch_ip_script() {
     # 2. 修复上游 IPQS JSON 序列化读取错误数组，导致有效分数被写成 null
     sed -i 's/${ipapi\[ipqs\]:-null}/${ipqs[score]:-null}/g' "$target" 2>/dev/null || true
 
-    # 3. 修复 DB-IP 使用 /self 导致 IPv6 检测可能写入请求出口 IPv4；显式查询目标 IP
+    # 3. 修复 DB-IP IPv6 检测可能拿到 IPv4：保留 /self 访客查询语义，但强制使用目标协议族
     sed -i '/^if \[\[ \$IP == \*:\* \]\];then$/{N;N;s/^if \[\[ \$IP == \*:\* \]\];then\ntmpcurlarg=""\nfi$//;}' "$target" 2>/dev/null || true
-    sed -i 's#https://api\.db-ip\.com/v2/\$tmpurl/self?convertCurrencies#https://api.db-ip.com/v2/$tmpurl/$IP?convertCurrencies#g' "$target" 2>/dev/null || true
+    sed -i 's#https://api\.db-ip\.com/v2/\$tmpurl/\$IP?convertCurrencies#https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies#g' "$target" 2>/dev/null || true
+    sed -i '/api\.db-ip\.com\/v2\/\$tmpurl\/self?convertCurrencies/s/curl \$tmpcurlarg -sL -m 10/curl $tmpcurlarg -sL -$1 -m 10/' "$target" 2>/dev/null || true
+    sed -i 's/^db_dbip$/db_dbip $2/' "$target" 2>/dev/null || true
 
     return 0
 }

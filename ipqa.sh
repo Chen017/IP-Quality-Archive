@@ -538,6 +538,9 @@ validate_ipqa_candidate() {
 
 ensure_ip_script() {
     if [[ -f "$IP_SCRIPT" ]]; then
+        # Existing cached cores must also receive newly added upstream bug patches.
+        patch_ip_script "$IP_SCRIPT" || return 1
+        bash -n "$IP_SCRIPT" 2>/dev/null || return 1
         return 0
     fi
 

@@ -714,20 +714,42 @@ validate_json() {
 }
 
 # Reject empty/partial core output before publishing a daily archive.
+# IPQuality is invoked with -p, so .Head.IP may contain its standard privacy mask.
 validate_ipqa_report() {
     local file="$1" family="$2" ip octet
     validate_json "$file" || return 1
     ip=$(jq -er 'select(type == "object") | .Head.IP | select(type == "string" and length > 0)' "$file" 2>/dev/null) || return 1
-    if [[ "$family" == "v4" ]]; then
-        [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
-        local -a octets
-        IFS=. read -r -a octets <<< "$ip"
-        for octet in "${octets[@]}"; do
-            (( 10#$octet <= 255 )) || return 1
-        done
-    else
-        [[ "$ip" == *:* && "$ip" =~ ^[[:xdigit:]:.]+$ && "$ip" != *:::* ]] || return 1
-    fi
+
+    case "$family" in
+        v4)
+            local -a octets
+            if [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+                IFS=. read -r -a octets <<< "$ip"
+                for octet in "${octets[@]}"; do
+                    (( 10#$octet <= 255 )) || return 1
+                done
+            elif [[ "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.\*\.\*$ ]]; then
+                IFS=. read -r -a octets <<< "$ip"
+                for octet in "${octets[0]}" "${octets[1]}"; do
+                    (( 10#$octet <= 255 )) || return 1
+                done
+            else
+                return 1
+            fi
+            ;;
+        v6)
+            if [[ "$ip" == *"*"* ]]; then
+                # hide_ipv6 keeps up to the first three hextets and masks the remaining five.
+                # Zero compression in the upstream formatter can reduce the visible prefix to 1-2 hextets.
+                [[ "$ip" =~ ^([[:xdigit:]]{1,4}:){1,3}\*(:\*){4}$ ]] || return 1
+            else
+                [[ "$ip" == *:* && "$ip" =~ ^[[:xdigit:]:.]+$ && "$ip" != *:::* ]] || return 1
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 media_is_blocked() {

@@ -654,10 +654,16 @@ eval "$(sed -n '/^get_latest_fleet_archive()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 printf '{}' > "$TEST_ENV_DIR/empty.json"
 printf '{"Head":{"IP":"192.0.2.1"}}' > "$TEST_ENV_DIR/valid4.json"
 printf '{"Head":{"IP":"2001:db8::1"}}' > "$TEST_ENV_DIR/valid6.json"
+printf '{"Head":{"IP":"192.0.*.*"}}' > "$TEST_ENV_DIR/private4.json"
+printf '{"Head":{"IP":"2001:db8:*:*:*:*:*"}}' > "$TEST_ENV_DIR/private6-compressed.json"
+printf '{"Head":{"IP":"2001:db8:1234:*:*:*:*:*"}}' > "$TEST_ENV_DIR/private6.json"
 printf '{"Head":{"IP":"999.0.0.1"}}' > "$TEST_ENV_DIR/invalid4.json"
+printf '{"Head":{"IP":"300.0.*.*"}}' > "$TEST_ENV_DIR/invalid-private4.json"
+printf '{"Head":{"IP":"2001:db8:1234:5678:*:*:*:*"}}' > "$TEST_ENV_DIR/invalid-private6.json"
 if ! validate_ipqa_report "$TEST_ENV_DIR/empty.json" v4; then pass "空 JSON 不再作为成功归档"; else fail "空报告" "错误接受空 JSON"; fi
 if validate_ipqa_report "$TEST_ENV_DIR/valid4.json" v4 && validate_ipqa_report "$TEST_ENV_DIR/valid6.json" v6; then pass "有效双栈报告通过基本校验"; else fail "报告校验" "有效报告被拒绝"; fi
-if ! validate_ipqa_report "$TEST_ENV_DIR/valid6.json" v4 && ! validate_ipqa_report "$TEST_ENV_DIR/valid4.json" v6 && ! validate_ipqa_report "$TEST_ENV_DIR/invalid4.json" v4; then pass "拒绝协议错误及超出范围的 IP"; else fail "IP 校验" "接受错误地址"; fi
+if validate_ipqa_report "$TEST_ENV_DIR/private4.json" v4 && validate_ipqa_report "$TEST_ENV_DIR/private6-compressed.json" v6 && validate_ipqa_report "$TEST_ENV_DIR/private6.json" v6; then pass "IPQuality -p 隐私地址格式可正常归档"; else fail "隐私地址校验" "生产环境脱敏 IP 被错误拒绝"; fi
+if ! validate_ipqa_report "$TEST_ENV_DIR/valid6.json" v4 && ! validate_ipqa_report "$TEST_ENV_DIR/valid4.json" v6 && ! validate_ipqa_report "$TEST_ENV_DIR/invalid4.json" v4 && ! validate_ipqa_report "$TEST_ENV_DIR/invalid-private4.json" v4 && ! validate_ipqa_report "$TEST_ENV_DIR/invalid-private6.json" v6; then pass "拒绝协议错误及非法完整/脱敏 IP"; else fail "IP 校验" "接受错误地址"; fi
 if media_is_blocked '未解锁' && media_is_blocked 'Not Unlocked' && ! media_is_blocked 'DNS解锁'; then pass "否定解锁状态优先于成功关键词"; else fail "解锁校验" "否定状态被误判"; fi
 V4_DIR="$TEST_ENV_DIR/latest/v4"
 V6_DIR="$TEST_ENV_DIR/latest/v6"

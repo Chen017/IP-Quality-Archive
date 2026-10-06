@@ -567,6 +567,19 @@ cat > "$CANDIDATE_VALID" << 'EOF'
 # script_version="2.0"
 # IPQuality Check_DNS
 youtube[uregion]="  $Font_Red[CN]$Font_Green   "
+db_dbip(){
+dbip=()
+local tmpcurlarg="$CurlARG"
+if [[ $IP == *:* ]];then
+tmpcurlarg=""
+fi
+local RESPONSE=$(curl $tmpcurlarg -sL -m 10 "https://db-ip.com/api/core/")
+local tmpurl=$(echo "$RESPONSE"|sed -n 's/.*data-api-key="\\([^"]*\\)".*/\\1/p'|head -n 1)
+RESPONSE=$(curl $tmpcurlarg -sL -m 10 "https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies")
+echo "$RESPONSE"|jq . >/dev/null 2>&1||RESPONSE=""
+dbip[risktext]=$(echo "$RESPONSE"|jq -r '.threatLevel')
+}
+db_dbip
 echo "core logic"
 EOF
 
@@ -644,7 +657,7 @@ else
     fail "Alpine 代码残留" "在生产代码中仍检测到 apk 相关逻辑"
 fi
 
-echo -e "\n[测试组 9] IPQuality DB-IP 补丁与幂等性回归检查:"
+echo -e "\n[测试组 13] IPQuality DB-IP 补丁与幂等性回归检查:"
 eval "$(sed -n '/^patch_ip_script()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 DBIP_CORE_FIXTURE="$TEST_ENV_DIR/dbip-core.sh"
 cat > "$DBIP_CORE_FIXTURE" << 'EOF'

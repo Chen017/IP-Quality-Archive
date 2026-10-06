@@ -644,6 +644,41 @@ else
     fail "Alpine 代码残留" "在生产代码中仍检测到 apk 相关逻辑"
 fi
 
+echo -e "\n[测试组 9] IPQuality DB-IP 补丁与幂等性回归检查:"
+eval "$(sed -n '/^patch_ip_script()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+DBIP_CORE_FIXTURE="$TEST_ENV_DIR/dbip-core.sh"
+cat > "$DBIP_CORE_FIXTURE" << 'EOF'
+db_dbip(){
+dbip=()
+local tmpcurlarg="$CurlARG"
+if [[ $IP == *:* ]];then
+tmpcurlarg=""
+fi
+local RESPONSE=$(curl $tmpcurlarg -sL -m 10 "https://db-ip.com/api/core/")
+local tmpurl=$(echo "$RESPONSE"|sed -n 's/.*data-api-key="\\([^"]*\\)".*/\\1/p'|head -n 1)
+RESPONSE=$(curl $tmpcurlarg -sL -m 10 "https://api.db-ip.com/v2/$tmpurl/$IP?convertCurrencies")
+echo "$RESPONSE"|jq . >/dev/null 2>&1||RESPONSE=""
+dbip[risktext]=$(echo "$RESPONSE"|jq -r '.threatLevel')
+}
+db_dbip
+EOF
+if patch_ip_script "$DBIP_CORE_FIXTURE" && patch_ip_script "$DBIP_CORE_FIXTURE" && bash -n "$DBIP_CORE_FIXTURE"; then
+    guard_count=$(grep -Fc 'local dbip_error dbip_ip' "$DBIP_CORE_FIXTURE")
+    key_guard_count=$(grep -Fc '[[ -z $tmpurl ]]&&return 1' "$DBIP_CORE_FIXTURE")
+    if [[ "$guard_count" -eq 1 && "$key_guard_count" -eq 1 ]] &&
+       grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10 "https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies"' "$DBIP_CORE_FIXTURE" &&
+       grep -Fq 'db_dbip $2' "$DBIP_CORE_FIXTURE" &&
+       grep -Fq '.errorCode // empty' "$DBIP_CORE_FIXTURE" &&
+       grep -Fq '.ipAddress // empty' "$DBIP_CORE_FIXTURE" &&
+       ! sed -n '/^db_dbip(){/,/^}/p' "$DBIP_CORE_FIXTURE" | grep -Fq 'tmpcurlarg=""'; then
+        pass "DB-IP 补丁强制目标协议族、校验返回协议族且重复执行保持幂等"
+    else
+        fail "DB-IP 补丁" "补丁结果缺少协议族校验、错误处理或发生重复插入"
+    fi
+else
+    fail "DB-IP 补丁" "补丁执行或语法校验失败"
+fi
+
 echo -e "\n=============================================================================="
 echo "测试结果汇总前，执行归档与解锁回归检查"
 eval "$(sed -n '/^validate_json()/,/^}/p' "$REPO_ROOT/ipqa.sh")"

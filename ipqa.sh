@@ -485,13 +485,38 @@ patch_ip_script() {
     # 2. 修复上游 IPQS JSON 序列化读取错误数组，导致有效分数被写成 null
     sed -i 's/${ipapi\[ipqs\]:-null}/${ipqs[score]:-null}/g' "$target" 2>/dev/null || true
 
-    # 3. 修复 DB-IP IPv6 检测可能拿到 IPv4：保留 /self 访客查询语义，但强制使用目标协议族
+    # 3. 修复 DB-IP /self 在 IPv6 检测中误用 IPv4 结果：
+    #    - 保留 public key 仅允许 /self 的语义
+    #    - API 请求强制使用当前检测协议族
+    #    - 拒绝空 key、DB-IP errorCode 与返回 IP 协议族错配
     sed -i '/^if \[\[ \$IP == \*:\* \]\];then$/{N;N;s/^if \[\[ \$IP == \*:\* \]\];then\ntmpcurlarg=""\nfi$//;}' "$target" 2>/dev/null || true
     sed -i 's#https://api\.db-ip\.com/v2/\$tmpurl/\$IP?convertCurrencies#https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies#g' "$target" 2>/dev/null || true
     sed -i '/api\.db-ip\.com\/v2\/\$tmpurl\/self?convertCurrencies/s/curl \$tmpcurlarg -sL -m 10/curl $tmpcurlarg -sL -$1 -m 10/' "$target" 2>/dev/null || true
     sed -i 's/^db_dbip$/db_dbip $2/' "$target" 2>/dev/null || true
 
+    local dbip_block has_key_guard=false has_response_guard=false
+    dbip_block=$(sed -n '/^db_dbip(){/,/^}/p' "$target")
+    [[ -z "$dbip_block" ]] && return 1
+    grep -Fq '[[ -z $tmpurl ]]&&return 1' <<< "$dbip_block" && has_key_guard=true
+    grep -Fq 'local dbip_error dbip_ip' <<< "$dbip_block" && has_response_guard=true
+    [[ "$has_key_guard" != "$has_response_guard" ]] && return 1
+
+    if [[ "$has_key_guard" == "false" ]]; then
+        local tmp_patch="${target}.dbip.$$.$RANDOM"
+        awk 'BEGIN{in_dbip=0} /^db_dbip\(\)\{/{in_dbip=1} {print} in_dbip && /^local tmpurl=/{print "[[ -z $tmpurl ]]&&return 1"} in_dbip && /^echo "\$RESPONSE"\|jq \. >\/dev\/null 2>&1\|\|RESPONSE=""$/{print "local dbip_error dbip_ip"; print "dbip_error=$(echo \"$RESPONSE\"|jq -r \".errorCode // empty\" 2>/dev/null)"; print "dbip_ip=$(echo \"$RESPONSE\"|jq -r \".ipAddress // empty\" 2>/dev/null)"; print "if [[ -n $dbip_error ]];then"; print "RESPONSE=\"\""; print "elif [[ $1 -eq 4 ]];then"; print "[[ $dbip_ip =~ ^[0-9]{1,3}([.][0-9]{1,3}){3}$ ]]||RESPONSE=\"\""; print "elif [[ $1 -eq 6 ]];then"; print "[[ $dbip_ip == *:* ]]||RESPONSE=\"\""; print "else"; print "RESPONSE=\"\""; print "fi"} in_dbip && /^}$/{in_dbip=0}' "$target" > "$tmp_patch" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
+        cat "$tmp_patch" > "$target" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
+        rm -f "$tmp_patch" 2>/dev/null || true
+    fi
+
+    dbip_block=$(sed -n '/^db_dbip(){/,/^}/p' "$target")
+    grep -Fq '[[ -z $tmpurl ]]&&return 1' <<< "$dbip_block" || return 1
+    grep -Fq 'local dbip_error dbip_ip' <<< "$dbip_block" || return 1
+    grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10' <<< "$dbip_block" || return 1
+    grep -Fq 'db_dbip $2' "$target" || return 1
+    grep -Fq 'tmpcurlarg=""' <<< "$dbip_block" && return 1
+
     return 0
+}
 }
 
 # 校验并修补 IPQuality 上游检测核心 candidate (Phase E 6.2)

@@ -517,7 +517,6 @@ patch_ip_script() {
 
     return 0
 }
-}
 
 # 校验并修补 IPQuality 上游检测核心 candidate (Phase E 6.2)
 validate_and_patch_core_candidate() {

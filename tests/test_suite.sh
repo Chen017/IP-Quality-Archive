@@ -574,7 +574,7 @@ if [[ $IP == *:* ]];then
 tmpcurlarg=""
 fi
 local RESPONSE=$(curl $tmpcurlarg -sL -m 10 "https://db-ip.com/api/core/")
-local tmpurl=$(echo "$RESPONSE"|sed -n 's/.*data-api-key="\\([^"]*\\)".*/\\1/p'|head -n 1)
+local tmpurl=$(echo "$RESPONSE"|sed -n 's/.*data-api-key="\([^"]*\)".*/\1/p'|head -n 1)
 RESPONSE=$(curl $tmpcurlarg -sL -m 10 "https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies")
 echo "$RESPONSE"|jq . >/dev/null 2>&1||RESPONSE=""
 dbip[risktext]=$(echo "$RESPONSE"|jq -r '.threatLevel')
@@ -668,7 +668,7 @@ if [[ $IP == *:* ]];then
 tmpcurlarg=""
 fi
 local RESPONSE=$(curl $tmpcurlarg -sL -m 10 "https://db-ip.com/api/core/")
-local tmpurl=$(echo "$RESPONSE"|sed -n 's/.*data-api-key="\\([^"]*\\)".*/\\1/p'|head -n 1)
+local tmpurl=$(echo "$RESPONSE"|sed -n 's/.*data-api-key="\([^"]*\)".*/\1/p'|head -n 1)
 RESPONSE=$(curl $tmpcurlarg -sL -m 10 "https://api.db-ip.com/v2/$tmpurl/$IP?convertCurrencies")
 echo "$RESPONSE"|jq . >/dev/null 2>&1||RESPONSE=""
 dbip[risktext]=$(echo "$RESPONSE"|jq -r '.threatLevel')

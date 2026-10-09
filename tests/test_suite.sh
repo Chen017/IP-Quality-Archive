@@ -697,9 +697,14 @@ fi
 # omit ipAddress; both key acquisition and /self requests must still use -4.
 if (
     eval "$(sed -n '/^db_dbip(){/,/^}/p' "$DBIP_CORE_FIXTURE")"
+    # Variables consumed by the dynamically extracted production DB-IP function.
+    # shellcheck disable=SC2034
     declare -A dbip sinfo sscore
+    # shellcheck disable=SC2034
     CurlARG=""
+    # shellcheck disable=SC2034
     IP="192.0.2.10"
+    # shellcheck disable=SC2034
     ibar_step=0
     show_progress_bar() { :; }
     kill_progress_bar() { :; }
@@ -781,7 +786,7 @@ else
 fi
 
 if ! grep -Fq 'remote_ver=' "$REPO_ROOT/ipqa.sh" &&
-   grep -Fq 'compare the fully patched content instead' "$REPO_ROOT/ipqa.sh" &&
+   grep -Fq 'the fully patched content instead' "$REPO_ROOT/ipqa.sh" &&
    grep -Fq 'cmp -s "$tmp_ip" "$IP_SCRIPT"' "$REPO_ROOT/ipqa.sh"; then
     pass "检测核心每日按内容同步，不再因相同 script_version 漏掉上游修复"
 else

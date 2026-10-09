@@ -485,35 +485,53 @@ patch_ip_script() {
     # 2. 修复上游 IPQS JSON 序列化读取错误数组，导致有效分数被写成 null
     sed -i 's/${ipapi\[ipqs\]:-null}/${ipqs[score]:-null}/g' "$target" 2>/dev/null || true
 
-    # 3. 修复 DB-IP /self 在 IPv6 检测中误用 IPv4 结果：
+    # 3. 修复 DB-IP /self 在双栈环境中可能走错协议族：
     #    - 保留 public key 仅允许 /self 的语义
-    #    - API 请求强制使用当前检测协议族
-    #    - 拒绝空 key、DB-IP errorCode 与返回 IP 协议族错配
+    #    - API 请求强制使用当前检测协议族 (-4/-6)
+    #    - 仅拒绝空 key；不要依赖响应中的 ipAddress 字段再次判定协议族
     sed -i '/^if \[\[ \$IP == \*:\* \]\];then$/{N;N;s/^if \[\[ \$IP == \*:\* \]\];then\ntmpcurlarg=""\nfi$//;}' "$target" 2>/dev/null || true
     sed -i 's#https://api\.db-ip\.com/v2/\$tmpurl/\$IP?convertCurrencies#https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies#g' "$target" 2>/dev/null || true
     sed -i '/api\.db-ip\.com\/v2\/\$tmpurl\/self?convertCurrencies/s/curl \$tmpcurlarg -sL -m 10/curl $tmpcurlarg -sL -$1 -m 10/' "$target" 2>/dev/null || true
     sed -i 's/^db_dbip$/db_dbip $2/' "$target" 2>/dev/null || true
 
-    local dbip_block has_key_guard=false has_response_guard=false
+    local dbip_block tmp_patch
     dbip_block=$(sed -n '/^db_dbip(){/,/^}/p' "$target")
     [[ -z "$dbip_block" ]] && return 1
-    grep -Fq '[[ -z $tmpurl ]]&&return 1' <<< "$dbip_block" && has_key_guard=true
-    grep -Fq 'local dbip_error dbip_ip' <<< "$dbip_block" && has_response_guard=true
-    [[ "$has_key_guard" != "$has_response_guard" ]] && return 1
 
-    if [[ "$has_key_guard" == "false" ]]; then
-        local tmp_patch="${target}.dbip.$$.$RANDOM"
-        awk 'BEGIN{in_dbip=0} /^db_dbip\(\)\{/{in_dbip=1} {print} in_dbip && /^local tmpurl=/{print "[[ -z $tmpurl ]]&&return 1"} in_dbip && /^echo "\$RESPONSE"\|jq \. >\/dev\/null 2>&1\|\|RESPONSE=""$/{print "local dbip_error dbip_ip"; print "dbip_error=$(echo \"$RESPONSE\"|jq -r \".errorCode // empty\" 2>/dev/null)"; print "dbip_ip=$(echo \"$RESPONSE\"|jq -r \".ipAddress // empty\" 2>/dev/null)"; print "if [[ -n $dbip_error ]];then"; print "RESPONSE=\"\""; print "elif [[ $1 -eq 4 ]];then"; print "[[ $dbip_ip =~ ^[0-9]{1,3}([.][0-9]{1,3}){3}$ ]]||RESPONSE=\"\""; print "elif [[ $1 -eq 6 ]];then"; print "[[ $dbip_ip == *:* ]]||RESPONSE=\"\""; print "else"; print "RESPONSE=\"\""; print "fi"} in_dbip && /^}$/{in_dbip=0}' "$target" > "$tmp_patch" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
+    # Migrate cores patched by the previous over-strict response-family guard.
+    # DB-IP /self is already pinned to -4/-6 above; clearing a valid JSON response
+    # merely because .ipAddress is absent caused IPv4 DBIP scores to become null.
+    if grep -Fq 'local dbip_error dbip_ip' <<< "$dbip_block"; then
+        tmp_patch="${target}.dbip.$.$RANDOM"
+        awk 'BEGIN{in_dbip=0;skip_guard=0}
+             /^db_dbip\(\)\{/{in_dbip=1}
+             in_dbip && /^local dbip_error dbip_ip$/{skip_guard=1;next}
+             skip_guard && /^fi$/{skip_guard=0;next}
+             !skip_guard{print}
+             in_dbip && /^}$/{in_dbip=0}' "$target" > "$tmp_patch" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
+        cat "$tmp_patch" > "$target" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
+        rm -f "$tmp_patch" 2>/dev/null || true
+    fi
+
+    dbip_block=$(sed -n '/^db_dbip(){/,/^}/p' "$target")
+    if ! grep -Fq '[[ -z $tmpurl ]]&&return 1' <<< "$dbip_block"; then
+        tmp_patch="${target}.dbip.$.$RANDOM"
+        awk 'BEGIN{in_dbip=0}
+             /^db_dbip\(\)\{/{in_dbip=1}
+             {print}
+             in_dbip && /^local tmpurl=/{print "[[ -z $tmpurl ]]&&return 1"}
+             in_dbip && /^}$/{in_dbip=0}' "$target" > "$tmp_patch" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
         cat "$tmp_patch" > "$target" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
         rm -f "$tmp_patch" 2>/dev/null || true
     fi
 
     dbip_block=$(sed -n '/^db_dbip(){/,/^}/p' "$target")
     grep -Fq '[[ -z $tmpurl ]]&&return 1' <<< "$dbip_block" || return 1
-    grep -Fq 'local dbip_error dbip_ip' <<< "$dbip_block" || return 1
     grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10' <<< "$dbip_block" || return 1
     grep -Fq 'db_dbip $2' "$target" || return 1
     grep -Fq 'tmpcurlarg=""' <<< "$dbip_block" && return 1
+    grep -Fq 'local dbip_error dbip_ip' <<< "$dbip_block" && return 1
+    grep -Fq '.ipAddress // empty' <<< "$dbip_block" && return 1
 
     return 0
 }
@@ -657,37 +675,30 @@ auto_update_if_needed() {
 
         # 1. 自动同步 IPQuality 检测核心 (ip.sh) (M-05, M-08A, M-09, S-01, S-13)
         if [[ "$core_due" == "true" ]]; then
-            local tmp_ip="$IPQA_HOME/.ip.sh.tmp.$$.$RANDOM"
-            # S-13: 优先进行轻量化 HEAD / Range 版本比对
-            local remote_ver=""
-            remote_ver=$(curl -fsSL --connect-timeout 5 --max-time 10 -r 0-1024 https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh 2>/dev/null | grep -m 1 'script_version=' | cut -d '"' -f 2 || true)
-            local local_ver=""
-            [[ -f "$IP_SCRIPT" ]] && local_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2 || true)
-
-            if [[ -n "$remote_ver" && -n "$local_ver" && "$remote_ver" == "$local_ver" ]]; then
-                echo "$now_sec" > "$stamp_core"
-                log_msg "INFO" "IPQuality 检测核心版本已是最新 ($local_ver)，无需重复下载"
-            else
-                if curl -fsSL --connect-timeout 8 --max-time 30 https://IP.Check.Place -o "$tmp_ip" 2>/dev/null || curl -fsSL --connect-timeout 8 --max-time 30 https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_ip" 2>/dev/null; then
-                    if validate_and_patch_core_candidate "$tmp_ip"; then
-                        if [[ -f "$IP_SCRIPT" ]] && cmp -s "$tmp_ip" "$IP_SCRIPT"; then
-                            rm -f "$tmp_ip"
-                            log_msg "INFO" "IPQuality 检测核心已是最新版本"
-                        else
-                            mv -f "$tmp_ip" "$IP_SCRIPT"
-                            local new_ver
-                            new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
-                            log_msg "INFO" "检测核心自动更新成功，版本: ${new_ver:-未知}"
-                        fi
-                        echo "$now_sec" > "$stamp_core"
-                    else
+            local tmp_ip="$IPQA_HOME/.ip.sh.tmp.$.$RANDOM"
+            # Do not trust script_version as a content identifier: upstream may
+            # merge fixes without changing it. Fetch once per day and compare
+            # the fully patched content instead so same-version fixes propagate.
+            if curl -fsSL --connect-timeout 8 --max-time 30 -H "Cache-Control: no-cache" https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_ip" 2>/dev/null || \
+               curl -fsSL --connect-timeout 8 --max-time 30 https://IP.Check.Place -o "$tmp_ip" 2>/dev/null; then
+                if validate_and_patch_core_candidate "$tmp_ip"; then
+                    if [[ -f "$IP_SCRIPT" ]] && cmp -s "$tmp_ip" "$IP_SCRIPT"; then
                         rm -f "$tmp_ip"
-                        log_msg "WARN" "检测核心 patch 规则应用或语法校验失败，保留本地核心"
+                        log_msg "INFO" "IPQuality 检测核心内容已是最新"
+                    else
+                        mv -f "$tmp_ip" "$IP_SCRIPT"
+                        local new_ver
+                        new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
+                        log_msg "INFO" "检测核心自动更新成功，版本: ${new_ver:-未知}"
                     fi
+                    echo "$now_sec" > "$stamp_core"
                 else
                     rm -f "$tmp_ip"
-                    log_msg "WARN" "自动更新检测核心网络超时，继续使用本地核心"
+                    log_msg "WARN" "检测核心 patch 规则应用或语法校验失败，保留本地核心"
                 fi
+            else
+                rm -f "$tmp_ip"
+                log_msg "WARN" "自动更新检测核心网络超时，继续使用本地核心"
             fi
         fi
 
@@ -3323,8 +3334,8 @@ update_ipqa() {
     local tmp_core="$IPQA_HOME/ip.sh.tmp.$$.$RANDOM"
     local core_ok=false
 
-    if curl -fsSL --connect-timeout 10 --max-time 60 https://IP.Check.Place -o "$tmp_core" 2>/dev/null || \
-       curl -fsSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_core" 2>/dev/null; then
+    if curl -fsSL --connect-timeout 10 --max-time 60 -H "Cache-Control: no-cache" https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_core" 2>/dev/null || \
+       curl -fsSL --connect-timeout 10 --max-time 60 https://IP.Check.Place -o "$tmp_core" 2>/dev/null; then
         if validate_and_patch_core_candidate "$tmp_core"; then
             mv -f "$tmp_core" "$IP_SCRIPT"
             date +%s > "$IPQA_HOME/.last_core_update" 2>/dev/null || true

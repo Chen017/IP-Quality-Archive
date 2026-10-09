@@ -491,6 +491,8 @@ patch_ip_script() {
     #    - 仅拒绝空 key；不要依赖响应中的 ipAddress 字段再次判定协议族
     sed -i '/^if \[\[ \$IP == \*:\* \]\];then$/{N;N;s/^if \[\[ \$IP == \*:\* \]\];then\ntmpcurlarg=""\nfi$//;}' "$target" 2>/dev/null || true
     sed -i 's#https://api\.db-ip\.com/v2/\$tmpurl/\$IP?convertCurrencies#https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies#g' "$target" 2>/dev/null || true
+    # Keep DB-IP key lookup and /self API on the same IP family.
+    sed -i '/https:\/\/db-ip\.com\/api\/core\//s/curl \$tmpcurlarg -sL -m 10/curl $tmpcurlarg -sL -$1 -m 10/' "$target" 2>/dev/null || true
     sed -i '/api\.db-ip\.com\/v2\/\$tmpurl\/self?convertCurrencies/s/curl \$tmpcurlarg -sL -m 10/curl $tmpcurlarg -sL -$1 -m 10/' "$target" 2>/dev/null || true
     sed -i 's/^db_dbip$/db_dbip $2/' "$target" 2>/dev/null || true
 
@@ -502,7 +504,7 @@ patch_ip_script() {
     # DB-IP /self is already pinned to -4/-6 above; clearing a valid JSON response
     # merely because .ipAddress is absent caused IPv4 DBIP scores to become null.
     if grep -Fq 'local dbip_error dbip_ip' <<< "$dbip_block"; then
-        tmp_patch="${target}.dbip.$.$RANDOM"
+        tmp_patch="${target}.dbip.$$.$RANDOM"
         awk 'BEGIN{in_dbip=0;skip_guard=0}
              /^db_dbip\(\)\{/{in_dbip=1}
              in_dbip && /^local dbip_error dbip_ip$/{skip_guard=1;next}
@@ -515,7 +517,7 @@ patch_ip_script() {
 
     dbip_block=$(sed -n '/^db_dbip(){/,/^}/p' "$target")
     if ! grep -Fq '[[ -z $tmpurl ]]&&return 1' <<< "$dbip_block"; then
-        tmp_patch="${target}.dbip.$.$RANDOM"
+        tmp_patch="${target}.dbip.$$.$RANDOM"
         awk 'BEGIN{in_dbip=0}
              /^db_dbip\(\)\{/{in_dbip=1}
              {print}
@@ -527,11 +529,60 @@ patch_ip_script() {
 
     dbip_block=$(sed -n '/^db_dbip(){/,/^}/p' "$target")
     grep -Fq '[[ -z $tmpurl ]]&&return 1' <<< "$dbip_block" || return 1
-    grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10' <<< "$dbip_block" || return 1
+    grep -F 'https://db-ip.com/api/core/' <<< "$dbip_block" | grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10' || return 1
+    grep -F 'https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies' <<< "$dbip_block" | grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10' || return 1
     grep -Fq 'db_dbip $2' "$target" || return 1
     grep -Fq 'tmpcurlarg=""' <<< "$dbip_block" && return 1
     grep -Fq 'local dbip_error dbip_ip' <<< "$dbip_block" && return 1
     grep -Fq '.ipAddress // empty' <<< "$dbip_block" && return 1
+
+    # 4. DNS type: ordinary ANSWER counts and public wildcard DNS aren't DNS-unlock evidence.
+    local dns2_block dns3_block
+    dns2_block=$(sed -n '/^function Check_DNS_2(){/,/^}/p' "$target")
+    dns3_block=$(sed -n '/^function Check_DNS_3(){/,/^}/p' "$target")
+    if [[ -n "$dns2_block" || -n "$dns3_block" ]]; then
+        [[ -n "$dns2_block" && -n "$dns3_block" ]] || return 1
+        if [[ "$dns2_block" != *"IPQA: DNS answer count"* ||
+              "$dns3_block" != *"IPQA: validate wildcard"* ]]; then
+            tmp_patch="${target}.dns.$$.$RANDOM"
+            awk '
+                /^function Check_DNS_2\(\)\{$/ {
+                    print "function Check_DNS_2(){"
+                    print "    # IPQA: DNS answer count alone is not evidence of DNS unlocking."
+                    print "    echo 1"
+                    print "}"
+                    skip=1; found2=1; next
+                }
+                /^function Check_DNS_3\(\)\{$/ {
+                    print "function Check_DNS_3(){"
+                    print "    # IPQA: validate wildcard answers against an independent public resolver."
+                    print "    local probe=\"test${RANDOM}${RANDOM}.$1\" local_reply public_reply"
+                    print "    local_reply=$(dig +time=2 +tries=1 \"$probe\" 2>/dev/null) || { echo 1; return; }"
+                    print "    [[ \"$local_reply\" =~ ANSWER:[[:space:]]*([0-9]+) ]] || { echo 1; return; }"
+                    print "    (( BASH_REMATCH[1] > 0 )) || { echo 1; return; }"
+                    print "    public_reply=$(dig @1.1.1.1 +time=2 +tries=1 \"$probe\" 2>/dev/null) || { echo 1; return; }"
+                    print "    if [[ \"$public_reply\" =~ status:[[:space:]]*(NOERROR|NXDOMAIN) ]] && \\"
+                    print "       [[ \"$public_reply\" =~ ANSWER:[[:space:]]*0 ]]; then"
+                    print "        echo 0"
+                    print "    else"
+                    print "        echo 1"
+                    print "    fi"
+                    print "}"
+                    skip=1; found3=1; next
+                }
+                skip && /^}$/ {skip=0; next}
+                skip {next}
+                {print}
+                END {if(found2 != found3) exit 1}
+            ' "$target" > "$tmp_patch" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
+            cat "$tmp_patch" > "$target" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
+            rm -f "$tmp_patch" 2>/dev/null || true
+        fi
+        dns2_block=$(sed -n '/^function Check_DNS_2(){/,/^}/p' "$target")
+        dns3_block=$(sed -n '/^function Check_DNS_3(){/,/^}/p' "$target")
+        grep -Fq 'IPQA: DNS answer count' <<< "$dns2_block" || return 1
+        grep -Fq 'IPQA: validate wildcard' <<< "$dns3_block" || return 1
+    fi
 
     return 0
 }
@@ -675,7 +726,7 @@ auto_update_if_needed() {
 
         # 1. 自动同步 IPQuality 检测核心 (ip.sh) (M-05, M-08A, M-09, S-01, S-13)
         if [[ "$core_due" == "true" ]]; then
-            local tmp_ip="$IPQA_HOME/.ip.sh.tmp.$.$RANDOM"
+            local tmp_ip="$IPQA_HOME/.ip.sh.tmp.$$.$RANDOM"
             # Do not trust script_version as a content identifier: upstream may
             # merge fixes without changing it. Fetch once per day and compare
             # the fully patched content instead so same-version fixes propagate.

@@ -678,6 +678,7 @@ EOF
 if patch_ip_script "$DBIP_CORE_FIXTURE" && patch_ip_script "$DBIP_CORE_FIXTURE" && bash -n "$DBIP_CORE_FIXTURE"; then
     key_guard_count=$(grep -Fc '[[ -z $tmpurl ]]&&return 1' "$DBIP_CORE_FIXTURE")
     if [[ "$key_guard_count" -eq 1 ]] &&
+       grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10 "https://db-ip.com/api/core/"' "$DBIP_CORE_FIXTURE" &&
        grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10 "https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies"' "$DBIP_CORE_FIXTURE" &&
        grep -Fq 'db_dbip $2' "$DBIP_CORE_FIXTURE" &&
        ! grep -Fq 'local dbip_error dbip_ip' "$DBIP_CORE_FIXTURE" &&
@@ -689,6 +690,94 @@ if patch_ip_script "$DBIP_CORE_FIXTURE" && patch_ip_script "$DBIP_CORE_FIXTURE" 
     fi
 else
     fail "DB-IP 补丁" "补丁执行或语法校验失败"
+fi
+
+
+# Verify DB-IP behavior, not just inserted text: a valid IPv4 response may
+# omit ipAddress; both key acquisition and /self requests must still use -4.
+if (
+    eval "$(sed -n '/^db_dbip(){/,/^}/p' "$DBIP_CORE_FIXTURE")"
+    declare -A dbip sinfo sscore
+    CurlARG=""
+    IP="192.0.2.10"
+    ibar_step=0
+    show_progress_bar() { :; }
+    kill_progress_bar() { :; }
+    disown() { :; }
+    curl() {
+        [[ " $* " == *" -4 "* ]] || return 1
+        if [[ "$*" == *"https://db-ip.com/api/core/"* ]]; then
+            printf '<div data-api-key="test-key"></div>'
+        elif [[ "$*" == *"https://api.db-ip.com/v2/test-key/self?convertCurrencies"* ]]; then
+            printf '{"threatLevel":"low","countryCode":"NL","isProxy":false}'
+        else
+            return 1
+        fi
+    }
+    db_dbip 4 >/dev/null 2>&1
+    [[ "${dbip[risktext]:-}" == "low" ]]
+); then
+    pass "DB-IP IPv4 两次请求强制 -4；无 ipAddress 的正常响应保留"
+else
+    fail "DB-IP IPv4" "正常响应丢失、临时 key 失败或请求未统一使用 -4"
+fi
+
+DNS_CORE_FIXTURE="$TEST_ENV_DIR/dns-core.sh"
+cp "$DBIP_CORE_FIXTURE" "$DNS_CORE_FIXTURE"
+cat >> "$DNS_CORE_FIXTURE" <<'EOF'
+function Check_DNS_2(){
+local resultdnstext=$(dig $1|grep "ANSWER:")
+local resultdnstext=${resultdnstext#*"ANSWER: "}
+local resultdnstext=${resultdnstext%", AUTHORITY:"*}
+if [ "$resultdnstext" == "0" ]||[ "$resultdnstext" == "1" ]||[ "$resultdnstext" == "2" ];then
+echo 0
+else
+echo 1
+fi
+}
+function Check_DNS_3(){
+local resultdnstext=$(dig "test$RANDOM$RANDOM.$1"|grep "ANSWER:")
+local resultdnstext=${resultdnstext#*"ANSWER: "}
+local resultdnstext=${resultdnstext%", AUTHORITY:"*}
+if [ "$resultdnstext" == "0" ]||[ -z "$resultdnstext" ];then
+echo 1
+else
+echo 0
+fi
+}
+EOF
+
+if patch_ip_script "$DNS_CORE_FIXTURE" &&
+   patch_ip_script "$DNS_CORE_FIXTURE" &&
+   bash -n "$DNS_CORE_FIXTURE" &&
+   [[ "$(grep -Fc 'IPQA: DNS answer count' "$DNS_CORE_FIXTURE")" -eq 1 ]] &&
+   [[ "$(grep -Fc 'IPQA: validate wildcard' "$DNS_CORE_FIXTURE")" -eq 1 ]] &&
+   (
+       eval "$(sed -n '/^function Check_DNS_2()/,/^}/p' "$DNS_CORE_FIXTURE")"
+       eval "$(sed -n '/^function Check_DNS_3()/,/^}/p' "$DNS_CORE_FIXTURE")"
+       dig() {
+           if [[ "$*" == *"@1.1.1.1"* ]]; then
+               [[ "${REF_MODE:-}" == "fail" ]] && return 1
+               if [[ "${REF_MODE:-}" == "wildcard" ]]; then
+                   printf ';; status: NOERROR\n;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0\n'
+               else
+                   printf ';; status: NXDOMAIN\n;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 1\n'
+               fi
+           elif [[ "${LOCAL_MODE:-}" == "none" ]]; then
+               printf ';; status: NXDOMAIN\n;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 1\n'
+           else
+               printf ';; status: NOERROR\n;; flags: qr rd ra; QUERY: 1, ANSWER: 2, AUTHORITY: 0\n'
+           fi
+       }
+       [[ "$(Check_DNS_2 netflix.com)" == "1" ]] &&
+       [[ "$(REF_MODE=wildcard Check_DNS_3 www.youtube.com)" == "1" ]] &&
+       [[ "$(REF_MODE=nxdomain Check_DNS_3 www.youtube.com)" == "0" ]] &&
+       [[ "$(REF_MODE=fail Check_DNS_3 chat.openai.com)" == "1" ]] &&
+       [[ "$(LOCAL_MODE=none Check_DNS_3 tiktok.com)" == "1" ]]
+   ); then
+    pass "DNS 回归：常规 ANSWER 和公共 wildcard 不误报，真实 DNS 改写仍可识别"
+else
+    fail "DNS 类型回归" "普通 DNS、真实改写、对照服务器故障或重复补丁测试失败"
 fi
 
 if ! grep -Fq 'remote_ver=' "$REPO_ROOT/ipqa.sh" &&

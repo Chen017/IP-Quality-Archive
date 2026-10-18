@@ -676,17 +676,18 @@ dbip[risktext]=$(echo "$RESPONSE"|jq -r '.threatLevel')
 db_dbip
 EOF
 if patch_ip_script "$DBIP_CORE_FIXTURE" && patch_ip_script "$DBIP_CORE_FIXTURE" && bash -n "$DBIP_CORE_FIXTURE"; then
-    key_guard_count=$(grep -Fc '[[ -z $tmpurl ]]&&return 1' "$DBIP_CORE_FIXTURE")
+    key_guard_count=$(grep -Fc 'stage=key http=200 reason=missing_key' "$DBIP_CORE_FIXTURE")
     if [[ "$key_guard_count" -eq 1 ]] &&
-       grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10 "https://db-ip.com/api/core/"' "$DBIP_CORE_FIXTURE" &&
-       grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10 "https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies"' "$DBIP_CORE_FIXTURE" &&
-       grep -Fq 'db_dbip $2' "$DBIP_CORE_FIXTURE" &&
+       grep -Fq 'https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies' "$DBIP_CORE_FIXTURE" &&
+       grep -Fq 'IPQA_DBIP_HTTP:' "$DBIP_CORE_FIXTURE" &&
+       grep -Fq '[[ $IP == *:* ]]&&return 1' "$DBIP_CORE_FIXTURE" &&
+       ! grep -Fq ' -$1 ' "$DBIP_CORE_FIXTURE" &&
        ! grep -Fq 'local dbip_error dbip_ip' "$DBIP_CORE_FIXTURE" &&
        ! grep -Fq '.ipAddress // empty' "$DBIP_CORE_FIXTURE" &&
-       ! sed -n '/^db_dbip(){/,/^}/p' "$DBIP_CORE_FIXTURE" | grep -Fq 'tmpcurlarg=""'; then
-        pass "DB-IP 补丁仅强制请求协议族，不再误清空正常 IPv4 响应且重复执行保持幂等"
+       ! grep -Fq '/$IP?convertCurrencies' "$DBIP_CORE_FIXTURE"; then
+        pass "DB-IP 补丁保留 IPv4 /self、跳过 IPv6、迁移旧响应过滤且保持幂等"
     else
-        fail "DB-IP 补丁" "补丁仍含响应协议族硬过滤、缺少 -4/-6 约束或发生重复插入"
+        fail "DB-IP 补丁" "补丁仍含旧过滤或强制协议族、缺少 IPv6 跳过或发生重复插入"
     fi
 else
     fail "DB-IP 补丁" "补丁执行或语法校验失败"
@@ -694,7 +695,7 @@ fi
 
 
 # Verify DB-IP behavior, not just inserted text: a valid IPv4 response may
-# omit ipAddress; both key acquisition and /self requests must still use -4.
+# omit ipAddress; both requests use the upstream transport without forcing IPv6.
 if (
     eval "$(sed -n '/^db_dbip(){/,/^}/p' "$DBIP_CORE_FIXTURE")"
     # Variables consumed by the dynamically extracted production DB-IP function.
@@ -710,11 +711,11 @@ if (
     kill_progress_bar() { :; }
     disown() { :; }
     curl() {
-        [[ " $* " == *" -4 "* ]] || return 1
+        [[ " $* " != *" -4 "* && " $* " != *" -6 "* && " $* " != *" -$1 "* ]] || return 1
         if [[ "$*" == *"https://db-ip.com/api/core/"* ]]; then
-            printf '<div data-api-key="test-key"></div>'
+            printf '<div data-api-key="test-key"></div>\nIPQA_DBIP_HTTP:200'
         elif [[ "$*" == *"https://api.db-ip.com/v2/test-key/self?convertCurrencies"* ]]; then
-            printf '{"threatLevel":"low","countryCode":"NL","isProxy":false}'
+            printf '{"threatLevel":"low","countryCode":"NL","isProxy":false}\nIPQA_DBIP_HTTP:200'
         else
             return 1
         fi
@@ -722,9 +723,9 @@ if (
     db_dbip 4 >/dev/null 2>&1
     [[ "${dbip[risktext]:-}" == "low" ]]
 ); then
-    pass "DB-IP IPv4 两次请求强制 -4；无 ipAddress 的正常响应保留"
+    pass "DB-IP IPv4 两次请求成功；无 ipAddress 的正常响应保留"
 else
-    fail "DB-IP IPv4" "正常响应丢失、临时 key 失败或请求未统一使用 -4"
+    fail "DB-IP IPv4" "正常响应丢失、临时 key 失败或残留强制协议族"
 fi
 
 DNS_CORE_FIXTURE="$TEST_ENV_DIR/dns-core.sh"
@@ -845,6 +846,11 @@ if (
     if run_check true; then exit 1; fi
     validate_ipqa_report "$V4_DIR/2026-10-05_040000.json" v4
 ); then pass "失败重试返回失败且保留同时间戳有效归档"; else fail "失败重试" "旧报告丢失或返回假成功"; fi
+if bash "$REPO_ROOT/tests/test_dbip.sh"; then
+    pass "DB-IP 缓存迁移、IPv4 零分、IPv6 跳过与失败诊断离线回归"
+else
+    fail "DB-IP 离线回归" "缓存修补、评分或诊断行为异常"
+fi
 echo "测试结果汇总: 总计 $TESTS_RUN 项测试, 通过: $TESTS_PASSED, 失败: $TESTS_FAILED"
 echo "=============================================================================="
 

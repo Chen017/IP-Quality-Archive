@@ -66,6 +66,8 @@ ipqa
 - **检测核心更新**  
   可通过 `ipqa --update` 更新程序及上游检测核心。
 
+DB-IP 当前使用访客 `/self` 查询，仅用于 IPv4；IPv6 的 DB-IP 字段保留为空，避免写入 IPv4 的结果。IPv4 请求失败时，`~/.ipqa/logs/ipqa.log` 会记录 `[IPQA DB-IP]`、失败阶段（`key` / `api`）及 HTTP 状态；HTTP 200 但响应无效时会记录原因或 API 错误码。诊断不增加请求、不自动重试，也不记录临时 key。历史记录中的 `null` 不会回填为低风险。
+
 ---
 
 ## 常用命令

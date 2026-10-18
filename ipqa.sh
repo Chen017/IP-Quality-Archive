@@ -485,56 +485,55 @@ patch_ip_script() {
     # 2. 修复上游 IPQS JSON 序列化读取错误数组，导致有效分数被写成 null
     sed -i 's/${ipapi\[ipqs\]:-null}/${ipqs[score]:-null}/g' "$target" 2>/dev/null || true
 
-    # 3. 修复 DB-IP /self 在双栈环境中可能走错协议族：
-    #    - 保留 public key 仅允许 /self 的语义
-    #    - API 请求强制使用当前检测协议族 (-4/-6)
-    #    - 仅拒绝空 key；不要依赖响应中的 ipAddress 字段再次判定协议族
-    sed -i '/^if \[\[ \$IP == \*:\* \]\];then$/{N;N;s/^if \[\[ \$IP == \*:\* \]\];then\ntmpcurlarg=""\nfi$//;}' "$target" 2>/dev/null || true
-    sed -i 's#https://api\.db-ip\.com/v2/\$tmpurl/\$IP?convertCurrencies#https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies#g' "$target" 2>/dev/null || true
-    # Keep DB-IP key lookup and /self API on the same IP family.
-    sed -i '/https:\/\/db-ip\.com\/api\/core\//s/curl \$tmpcurlarg -sL -m 10/curl $tmpcurlarg -sL -$1 -m 10/' "$target" 2>/dev/null || true
-    sed -i '/api\.db-ip\.com\/v2\/\$tmpurl\/self?convertCurrencies/s/curl \$tmpcurlarg -sL -m 10/curl $tmpcurlarg -sL -$1 -m 10/' "$target" 2>/dev/null || true
-    sed -i 's/^db_dbip$/db_dbip $2/' "$target" 2>/dev/null || true
-
-    local dbip_block tmp_patch
-    dbip_block=$(sed -n '/^db_dbip(){/,/^}/p' "$target")
-    [[ -z "$dbip_block" ]] && return 1
-
-    # Migrate cores patched by the previous over-strict response-family guard.
-    # DB-IP /self is already pinned to -4/-6 above; clearing a valid JSON response
-    # merely because .ipAddress is absent caused IPv4 DBIP scores to become null.
-    if grep -Fq 'local dbip_error dbip_ip' <<< "$dbip_block"; then
-        tmp_patch="${target}.dbip.$$.$RANDOM"
-        awk 'BEGIN{in_dbip=0;skip_guard=0}
-             /^db_dbip\(\)\{/{in_dbip=1}
-             in_dbip && /^local dbip_error dbip_ip$/{skip_guard=1;next}
-             skip_guard && /^fi$/{skip_guard=0;next}
-             !skip_guard{print}
-             in_dbip && /^}$/{in_dbip=0}' "$target" > "$tmp_patch" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
-        cat "$tmp_patch" > "$target" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
-        rm -f "$tmp_patch" 2>/dev/null || true
+    # 3. /self 返回连接出口的资料，不能用 -6 将其当作 IPv6 查询。
+    # 同时迁移旧缓存的 /$IP 与强制协议族补丁，并记录失败阶段（不增加请求）。
+    local patched="${target}.patch.$$.$RANDOM"
+    if ! awk '
+        /^db_dbip\(\)\{/ { in_dbip = 1 }
+        in_dbip {
+            # Migrate the old guard that rejected valid responses without ipAddress.
+            if ($0 == "local dbip_error dbip_ip") { skip_guard = 1; next }
+            if (skip_guard) { if ($0 == "fi") skip_guard = 0; next }
+            # Drop our generated lines so repeated cache repairs are idempotent.
+            if ($0 ~ /^: IPQA_DBIP_DIAG;/ ||
+                $0 == "[[ $IP == *:* ]]&&return 1" ||
+                $0 == "[[ -z $tmpurl ]]&&return 1" ||
+                $0 == "echo \"$RESPONSE\"|jq . >/dev/null 2>&1||RESPONSE=\"\"") next
+            is_curl = index($0, "curl $tmpcurlarg ") &&
+                (index($0, "https://db-ip.com/") || index($0, "https://api.db-ip.com/"))
+            if (is_curl) {
+                stage = index($0, "https://api.db-ip.com/") ? "api" : "key"
+                gsub(/ -\$1 /, " ")
+                gsub(/ -[46] /, " ")
+                sub(/\/v2\/\$tmpurl\/\$IP\?convertCurrencies/, "/v2/$tmpurl/self?convertCurrencies")
+                if (!index($0, "IPQA_DBIP_HTTP:")) {
+                    pos = index($0, " -sL ")
+                    $0 = substr($0, 1, pos - 1) " -sL -w \047\\nIPQA_DBIP_HTTP:%{http_code}\047 " substr($0, pos + 5)
+                }
+            }
+            print
+            if ($0 == "dbip=()") print "[[ $IP == *:* ]]&&return 1"
+            if (is_curl) {
+                print ": IPQA_DBIP_DIAG; local dbip_http=\"${RESPONSE##*IPQA_DBIP_HTTP:}\"; RESPONSE=\"${RESPONSE%IPQA_DBIP_HTTP:*}\"; [[ $dbip_http == 200 ]] || { echo \"[IPQA DB-IP] stage=" stage " http=$dbip_http\" >&2; return 1; }"
+                if (stage == "api") {
+                    print ": IPQA_DBIP_DIAG; echo \"$RESPONSE\"|jq -e \047type == \"object\"\047 >/dev/null 2>&1 || { echo \"[IPQA DB-IP] stage=api http=200 reason=invalid_json\" >&2; return 1; }"
+                    print ": IPQA_DBIP_DIAG; local dbip_error=$(echo \"$RESPONSE\"|jq -r \047.errorCode // empty\047|tr -cd \047[:alnum:]_-\047); [[ -z $dbip_error ]] || { echo \"[IPQA DB-IP] stage=api http=200 error=$dbip_error\" >&2; return 1; }"
+                }
+            }
+            if ($0 ~ /^local tmpurl=/) print ": IPQA_DBIP_DIAG; [[ -n $tmpurl ]] || { echo \"[IPQA DB-IP] stage=key http=200 reason=missing_key\" >&2; return 1; }"
+            if ($0 ~ /^dbip\[risktext\]=/) print ": IPQA_DBIP_DIAG; case ${dbip[risktext],,} in low|medium|high) ;; *) echo \"[IPQA DB-IP] stage=api http=200 reason=missing_or_unknown_threat\" >&2 ;; esac"
+            if ($0 == "}") in_dbip = 0
+            next
+        }
+        { print }
+    ' "$target" > "$patched" || ! bash -n "$patched" 2>/dev/null; then
+        rm -f "$patched"
+        return 1
     fi
+    chmod --reference="$target" "$patched" || { rm -f "$patched"; return 1; }
+    mv -f "$patched" "$target" || { rm -f "$patched"; return 1; }
 
-    dbip_block=$(sed -n '/^db_dbip(){/,/^}/p' "$target")
-    if ! grep -Fq '[[ -z $tmpurl ]]&&return 1' <<< "$dbip_block"; then
-        tmp_patch="${target}.dbip.$$.$RANDOM"
-        awk 'BEGIN{in_dbip=0}
-             /^db_dbip\(\)\{/{in_dbip=1}
-             {print}
-             in_dbip && /^local tmpurl=/{print "[[ -z $tmpurl ]]&&return 1"}
-             in_dbip && /^}$/{in_dbip=0}' "$target" > "$tmp_patch" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
-        cat "$tmp_patch" > "$target" || { rm -f "$tmp_patch" 2>/dev/null || true; return 1; }
-        rm -f "$tmp_patch" 2>/dev/null || true
-    fi
-
-    dbip_block=$(sed -n '/^db_dbip(){/,/^}/p' "$target")
-    grep -Fq '[[ -z $tmpurl ]]&&return 1' <<< "$dbip_block" || return 1
-    grep -F 'https://db-ip.com/api/core/' <<< "$dbip_block" | grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10' || return 1
-    grep -F 'https://api.db-ip.com/v2/$tmpurl/self?convertCurrencies' <<< "$dbip_block" | grep -Fq 'curl $tmpcurlarg -sL -$1 -m 10' || return 1
-    grep -Fq 'db_dbip $2' "$target" || return 1
-    grep -Fq 'tmpcurlarg=""' <<< "$dbip_block" && return 1
-    grep -Fq 'local dbip_error dbip_ip' <<< "$dbip_block" && return 1
-    grep -Fq '.ipAddress // empty' <<< "$dbip_block" && return 1
+    local tmp_patch
 
     # 4. DNS type: ordinary ANSWER counts and public wildcard DNS aren't DNS-unlock evidence.
     local dns2_block dns3_block
@@ -1345,7 +1344,12 @@ run_check() {
     log_msg "INFO" "开始执行 IPv4 检测: $ts"
 
     # 执行 IPv4 检测并输出到临时 JSON (S-03)
-    bash "$IP_SCRIPT" -4 -y -n -p -o "$v4_tmp" >/dev/null 2>&1
+    local v4_stderr="$V4_DIR/.${ts}.stderr.$$" dbip_diagnostic
+    bash "$IP_SCRIPT" -4 -y -n -p -o "$v4_tmp" >/dev/null 2>"$v4_stderr"
+    while IFS= read -r dbip_diagnostic; do
+        log_msg "WARN" "IPv4 $dbip_diagnostic"
+    done < <(grep -oE '\[IPQA DB-IP\].*' "$v4_stderr" || true)
+    rm -f "$v4_stderr"
 
     if validate_ipqa_report "$v4_tmp" v4; then
         mv "$v4_tmp" "$v4_out"

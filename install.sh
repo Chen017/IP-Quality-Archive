@@ -361,6 +361,57 @@ patch_ip_script() {
     # 1. 修复上游 ip.sh 中 Youtube 地区硬编码内嵌 Font_Red/Font_Green 导致 JSON 存储 1mCN2m 等 ANSI 残渣的 bug
     sed -i 's/youtube\[uregion\]="  \$Font_Red\[CN\]\$Font_Green   "/youtube[uregion]="  [CN]   "/g' "$target" 2>/dev/null || true
 
+    # 2. 与运行时保持一致，避免首次安装缓存遗漏 IPQS 修复。
+    sed -i 's/${ipapi\[ipqs\]:-null}/${ipqs[score]:-null}/g' "$target" 2>/dev/null || true
+
+    # 3. /self 返回连接出口的资料，不能用 -6 将其当作 IPv6 查询。
+    # 同时迁移旧缓存的 /$IP 与强制协议族补丁，并记录失败阶段（不增加请求）。
+    local patched="${target}.patch.$$.$RANDOM"
+    if ! awk '
+        /^db_dbip\(\)\{/ { in_dbip = 1 }
+        in_dbip {
+            # Migrate the old guard that rejected valid responses without ipAddress.
+            if ($0 == "local dbip_error dbip_ip") { skip_guard = 1; next }
+            if (skip_guard) { if ($0 == "fi") skip_guard = 0; next }
+            # Drop our generated lines so repeated cache repairs are idempotent.
+            if ($0 ~ /^: IPQA_DBIP_DIAG;/ ||
+                $0 == "[[ $IP == *:* ]]&&return 1" ||
+                $0 == "[[ -z $tmpurl ]]&&return 1" ||
+                $0 == "echo \"$RESPONSE\"|jq . >/dev/null 2>&1||RESPONSE=\"\"") next
+            is_curl = index($0, "curl $tmpcurlarg ") &&
+                (index($0, "https://db-ip.com/") || index($0, "https://api.db-ip.com/"))
+            if (is_curl) {
+                stage = index($0, "https://api.db-ip.com/") ? "api" : "key"
+                gsub(/ -\$1 /, " ")
+                gsub(/ -[46] /, " ")
+                sub(/\/v2\/\$tmpurl\/\$IP\?convertCurrencies/, "/v2/$tmpurl/self?convertCurrencies")
+                if (!index($0, "IPQA_DBIP_HTTP:")) {
+                    pos = index($0, " -sL ")
+                    $0 = substr($0, 1, pos - 1) " -sL -w \047\\nIPQA_DBIP_HTTP:%{http_code}\047 " substr($0, pos + 5)
+                }
+            }
+            print
+            if ($0 == "dbip=()") print "[[ $IP == *:* ]]&&return 1"
+            if (is_curl) {
+                print ": IPQA_DBIP_DIAG; local dbip_http=\"${RESPONSE##*IPQA_DBIP_HTTP:}\"; RESPONSE=\"${RESPONSE%IPQA_DBIP_HTTP:*}\"; [[ $dbip_http == 200 ]] || { echo \"[IPQA DB-IP] stage=" stage " http=$dbip_http\" >&2; return 1; }"
+                if (stage == "api") {
+                    print ": IPQA_DBIP_DIAG; echo \"$RESPONSE\"|jq -e \047type == \"object\"\047 >/dev/null 2>&1 || { echo \"[IPQA DB-IP] stage=api http=200 reason=invalid_json\" >&2; return 1; }"
+                    print ": IPQA_DBIP_DIAG; local dbip_error=$(echo \"$RESPONSE\"|jq -r \047.errorCode // empty\047|tr -cd \047[:alnum:]_-\047); [[ -z $dbip_error ]] || { echo \"[IPQA DB-IP] stage=api http=200 error=$dbip_error\" >&2; return 1; }"
+                }
+            }
+            if ($0 ~ /^local tmpurl=/) print ": IPQA_DBIP_DIAG; [[ -n $tmpurl ]] || { echo \"[IPQA DB-IP] stage=key http=200 reason=missing_key\" >&2; return 1; }"
+            if ($0 ~ /^dbip\[risktext\]=/) print ": IPQA_DBIP_DIAG; case ${dbip[risktext],,} in low|medium|high) ;; *) echo \"[IPQA DB-IP] stage=api http=200 reason=missing_or_unknown_threat\" >&2 ;; esac"
+            if ($0 == "}") in_dbip = 0
+            next
+        }
+        { print }
+    ' "$target" > "$patched" || ! bash -n "$patched" 2>/dev/null; then
+        rm -f "$patched"
+        return 1
+    fi
+    chmod --reference="$target" "$patched" || { rm -f "$patched"; return 1; }
+    mv -f "$patched" "$target" || { rm -f "$patched"; return 1; }
+
     return 0
 }
 

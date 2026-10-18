@@ -68,6 +68,8 @@ ipqa
 
 DB-IP 当前使用访客 `/self` 查询，仅用于 IPv4；IPv6 的 DB-IP 字段保留为空，避免写入 IPv4 的结果。IPv4 请求失败时，`~/.ipqa/logs/ipqa.log` 会记录 `[IPQA DB-IP]`、失败阶段（`key` / `api`）及 HTTP 状态；HTTP 200 但响应无效时会记录原因或 API 错误码。诊断不增加请求、不自动重试，也不记录临时 key。历史记录中的 `null` 不会回填为低风险。
 
+MaxMind 查询失败进入 Lite 模式时，基础信息仍使用备用来源；Scamalytics、ipapi、AbuseIPDB、IP2Location、IPQS 则独立查询，返回的有效评分会展示并写入 JSON。每个评分库仅尝试一次，不追加重试；未返回评分、接口不支持或响应无效时保留为空，不算作低风险。IPv6 能取得哪些评分取决于接口的实际支持情况。
+
 ---
 
 ## 常用命令

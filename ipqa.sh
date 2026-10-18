@@ -489,6 +489,55 @@ patch_ip_script() {
     # 同时迁移旧缓存的 /$IP 与强制协议族补丁，并记录失败阶段（不增加请求）。
     local patched="${target}.patch.$$.$RANDOM"
     if ! awk '
+        # Lite is a basic-info fallback, not a switch for independent score APIs.
+        /^check_IP\(\)\{/ { in_check = 1 }
+        in_check {
+            if ($0 ~ /^\[\[ \$mode_lite -eq 0 \]\]&&db_(scamalytics|abuseipdb|ip2location|ipqs) \$2\|\|/) {
+                sub(/^\[\[ \$mode_lite -eq 0 \]\]&&/, "")
+                sub(/\|\|[a-z0-9]+=\(\)$/, "")
+            }
+            print
+            if ($0 == "}") in_check = 0
+            next
+        }
+        /^show_score\(\)\{/ { in_score = 1 }
+        in_score {
+            sub(/ && \$mode_lite -eq 0/, "")
+            if ($0 == "if [[ $mode_lite -eq 0 ]];then")
+                $0 = "if [[ -n ${abuseipdb[score]} || -n ${ipqs[score]} ]];then"
+            print
+            if ($0 == "}") in_score = 0
+            next
+        }
+        /^db_(scamalytics|abuseipdb|ip2location|ipqs|ipapi)\(\)\{/ {
+            provider = $0
+            sub(/^db_/, "", provider)
+            sub(/\(\)\{$/, "", provider)
+            in_provider = 1
+        }
+        in_provider {
+            if ($0 == "[[ -n ${ipapi[score]} ]]||unset \047ipapi[risk]\047") next
+            if ($0 == "echo \"$RESPONSE\"|jq . >/dev/null 2>&1||RESPONSE=\"\"")
+                $0 = "[[ -n $RESPONSE ]]&&echo \"$RESPONSE\"|jq -e \047type == \"object\" and .errorCode == null and .error == null and .success != false\047 >/dev/null 2>&1||return 1"
+            if (provider != "ipapi" && $0 ~ ("^" provider "\\[score\\]=")) {
+                field = provider == "scamalytics" ? ".scamalytics.scamalytics_score" :
+                    (provider == "abuseipdb" ? ".data.abuseConfidenceScore" : ".fraud_score")
+                $0 = provider "[score]=$(echo \"$RESPONSE\"|jq -r \047" field " | tonumber? | select(. >= 0 and . <= 100 and . == floor)\047)"
+            }
+            if (provider == "ipapi" && $0 ~ /^ipapi\[scorenum\]=/)
+                $0 = "ipapi[scorenum]=$(echo \"$RESPONSE\"|jq -r \047.company.abuser_score | tostring | split(\" \")[0] | tonumber? | select(. >= 0 and . <= 1)\047)"
+            if ($0 ~ ("^if \\[\\[ \\$\\{" provider "\\[score\\]\\} -lt ")) {
+                print "if [[ -z ${" provider "[score]} ]];then"
+                print "unset \047" provider "[risk]\047"
+                sub(/^if /, "elif ")
+            }
+            if ($0 == "}") {
+                if (provider == "ipapi") print "[[ -n ${ipapi[score]} ]]||unset \047ipapi[risk]\047"
+                in_provider = 0
+            }
+            print
+            next
+        }
         /^db_dbip\(\)\{/ { in_dbip = 1 }
         in_dbip {
             # Migrate the old guard that rejected valid responses without ipAddress.

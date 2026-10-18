@@ -851,6 +851,11 @@ if bash "$REPO_ROOT/tests/test_dbip.sh"; then
 else
     fail "DB-IP 离线回归" "缓存修补、评分或诊断行为异常"
 fi
+if bash "$REPO_ROOT/tests/test_lite.sh"; then
+    pass "Lite 评分独立查询、显示、JSON 与失败隔离离线回归"
+else
+    fail "Lite 评分离线回归" "评分查询、有效值显示或空值处理异常"
+fi
 echo "测试结果汇总: 总计 $TESTS_RUN 项测试, 通过: $TESTS_PASSED, 失败: $TESTS_FAILED"
 echo "=============================================================================="
 

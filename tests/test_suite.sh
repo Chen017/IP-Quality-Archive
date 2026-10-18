@@ -856,6 +856,11 @@ if bash "$REPO_ROOT/tests/test_lite.sh"; then
 else
     fail "Lite 评分离线回归" "评分查询、有效值显示或空值处理异常"
 fi
+if bash "$REPO_ROOT/tests/test_awk_compat.sh"; then
+    pass "可用 awk 实现均可执行核心补丁且保持幂等"
+else
+    fail "awk 兼容性回归" "核心补丁语法或执行行为不兼容"
+fi
 echo "测试结果汇总: 总计 $TESTS_RUN 项测试, 通过: $TESTS_PASSED, 失败: $TESTS_FAILED"
 echo "=============================================================================="
 

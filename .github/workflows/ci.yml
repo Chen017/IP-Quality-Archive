@@ -8,8 +8,11 @@ on:
 
 jobs:
   test:
-    name: Syntax & Regression Tests
+    name: Syntax & Regression Tests (${{ matrix.awk }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        awk: [mawk, gawk]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -17,11 +20,17 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq curl cron shellcheck
+          sudo apt-get install -y jq curl cron shellcheck mawk gawk
+
+      - name: Select awk implementation
+        run: |
+          mkdir -p "$RUNNER_TEMP/ipqa-test-bin"
+          ln -s "$(command -v ${{ matrix.awk }})" "$RUNNER_TEMP/ipqa-test-bin/awk"
+          echo "$RUNNER_TEMP/ipqa-test-bin" >> "$GITHUB_PATH"
 
       - name: Run ShellCheck static analysis
         run: |
-          shellcheck -S warning -e SC2181,SC1090,SC1091,SC2086 install.sh ipqa.sh tests/test_suite.sh tests/test_dbip.sh tests/test_lite.sh
+          shellcheck -S warning -e SC2181,SC1090,SC1091,SC2086 install.sh ipqa.sh tests/test_suite.sh tests/test_dbip.sh tests/test_lite.sh tests/test_awk_compat.sh
 
       - name: Verify Bash syntax
         run: |
@@ -30,6 +39,7 @@ jobs:
           bash -n tests/test_suite.sh
           bash -n tests/test_dbip.sh
           bash -n tests/test_lite.sh
+          bash -n tests/test_awk_compat.sh
 
       - name: Run regression test suite
         run: |

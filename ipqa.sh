@@ -520,8 +520,9 @@ patch_ip_script() {
             if ($0 == "echo \"$RESPONSE\"|jq . >/dev/null 2>&1||RESPONSE=\"\"")
                 $0 = "[[ -n $RESPONSE ]]&&echo \"$RESPONSE\"|jq -e \047type == \"object\" and .errorCode == null and .error == null and .success != false\047 >/dev/null 2>&1||return 1"
             if (provider != "ipapi" && $0 ~ ("^" provider "\\[score\\]=")) {
-                field = provider == "scamalytics" ? ".scamalytics.scamalytics_score" :
-                    (provider == "abuseipdb" ? ".data.abuseConfidenceScore" : ".fraud_score")
+                if (provider == "scamalytics") field = ".scamalytics.scamalytics_score"
+                else if (provider == "abuseipdb") field = ".data.abuseConfidenceScore"
+                else field = ".fraud_score"
                 $0 = provider "[score]=$(echo \"$RESPONSE\"|jq -r \047" field " | tonumber? | select(. >= 0 and . <= 100 and . == floor)\047)"
             }
             if (provider == "ipapi" && $0 ~ /^ipapi\[scorenum\]=/)

@@ -61,7 +61,7 @@ is_dangerous_path() {
     if [[ -n "$HOME" ]]; then
         local h="${HOME%/}"
         case "$canon" in
-            "$h/.local"|"$h/.local/bin"|"$h/.config"|"$h/bin"|"$h/Desktop"|"$h/Documents"|"$h/Downloads")
+            "$h/.local"|"$h/.local/bin"|"$h/.config"|"$h/.ssh"|"$h/bin"|"$h/Desktop"|"$h/Documents"|"$h/Downloads")
                 return 0 ;;
         esac
     fi
@@ -138,6 +138,10 @@ do_uninstall() {
         if is_dangerous_path "$INSTALL_DIR"; then
             echo -e "${C_RED}错误: 检测到系统级或危险路径 ($INSTALL_DIR)，拒绝删除！${C_RESET}"
         else
+            if [[ ! -f "$INSTALL_DIR/ipqa.sh" || ! -f "$INSTALL_DIR/config.sh" ]] || ! grep -q 'IP Quality Archive\|IP 质量存档\|IPQA' "$INSTALL_DIR/ipqa.sh"; then
+                echo "拒绝删除: 目标不是可验证的 IPQA 安装目录" >&2
+                exit 1
+            fi
             rm -rf "$INSTALL_DIR"
             echo -e "${C_GREEN}✔ 已彻底删除 $INSTALL_DIR${C_RESET}"
         fi

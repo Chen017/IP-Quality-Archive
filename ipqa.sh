@@ -64,7 +64,19 @@ is_dangerous_path() {
 }
 
 # 基础环境与路径配置
-IPQA_HOME="${IPQA_DIR:-$HOME/.ipqa}"
+IPQA_SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$IPQA_SCRIPT_PATH" ]]; do
+    IPQA_SCRIPT_LINK=$(readlink "$IPQA_SCRIPT_PATH")
+    [[ "$IPQA_SCRIPT_LINK" = /* ]] && IPQA_SCRIPT_PATH="$IPQA_SCRIPT_LINK" || IPQA_SCRIPT_PATH="$(dirname "$IPQA_SCRIPT_PATH")/$IPQA_SCRIPT_LINK"
+done
+IPQA_SCRIPT_HOME="$(cd "$(dirname "$IPQA_SCRIPT_PATH")" && pwd -P)"
+if [[ -n "${IPQA_DIR:-}" ]]; then
+    IPQA_HOME="$IPQA_DIR"
+elif [[ -f "$IPQA_SCRIPT_HOME/config.sh" ]]; then
+    IPQA_HOME="$IPQA_SCRIPT_HOME"
+else
+    IPQA_HOME="$HOME/.ipqa"
+fi
 
 # M-04B: 在任何 mkdir 或 chmod 之前必须先行进行危险路径判定
 if is_dangerous_path "$IPQA_HOME"; then
@@ -1312,8 +1324,8 @@ compare_and_alert() {
         local engines=("IP2LOCATION" "ipapi" "ipregistry" "IPQS" "SCAMALYTICS" "ipdata" "IPinfo" "IPWHOIS" "DBIP")
         for eng in "${engines[@]}"; do
             local old_val new_val
-            old_val=$(jq -r "if .Factor[\"$factor\"][\"$eng\"] != null then .Factor[\"$factor\"][\"$eng\"] else .Factor[\"$factor\"][\"WHOIS\"] end" "$prev_file")
-            new_val=$(jq -r "if .Factor[\"$factor\"][\"$eng\"] != null then .Factor[\"$factor\"][\"$eng\"] else .Factor[\"$factor\"][\"WHOIS\"] end" "$new_file")
+            old_val=$(jq -r "if .Factor[\"$factor\"][\"$eng\"] != null then .Factor[\"$factor\"][\"$eng\"] elif \"$eng\" == \"IPWHOIS\" then .Factor[\"$factor\"][\"WHOIS\"] else null end" "$prev_file")
+            new_val=$(jq -r "if .Factor[\"$factor\"][\"$eng\"] != null then .Factor[\"$factor\"][\"$eng\"] elif \"$eng\" == \"IPWHOIS\" then .Factor[\"$factor\"][\"WHOIS\"] else null end" "$new_file")
             if [[ "$old_val" == "false" && "$new_val" == "true" ]]; then
                 add_alert "WARNING" "新增风险标记: $eng 检出 $factor 因子" "$ip_ver"
             fi
@@ -2165,7 +2177,7 @@ render_risk_factor_matrix() {
         printf "  %-10s │ " "$factor"
         for eng in "${full_engines[@]}"; do
             local val
-            val=$(jq -r "if .Factor[\"$factor\"][\"$eng\"] != null then .Factor[\"$factor\"][\"$eng\"] else .Factor[\"$factor\"][\"WHOIS\"] end" "$latest_file")
+            val=$(jq -r "if .Factor[\"$factor\"][\"$eng\"] != null then .Factor[\"$factor\"][\"$eng\"] elif \"$eng\" == \"IPWHOIS\" then .Factor[\"$factor\"][\"WHOIS\"] else null end" "$latest_file")
             if [[ "$val" == "false" ]]; then
                 printf "   %b    " "$SYM_DOT_GREEN"
             elif [[ "$val" == "true" ]]; then

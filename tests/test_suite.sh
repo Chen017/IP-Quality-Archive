@@ -861,6 +861,11 @@ if bash "$REPO_ROOT/tests/test_awk_compat.sh"; then
 else
     fail "awk 兼容性回归" "核心补丁语法或执行行为不兼容"
 fi
+if bash "$REPO_ROOT/tests/test_review_fixes.sh"; then
+    pass "安装保护、自定义目录和 WHOIS 别名隔离"
+else
+    fail "审查修复回归" "安装路径或别名异常"
+fi
 echo "测试结果汇总: 总计 $TESTS_RUN 项测试, 通过: $TESTS_PASSED, 失败: $TESTS_FAILED"
 echo "=============================================================================="
 

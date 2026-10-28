@@ -7,7 +7,7 @@ export TZ=UTC
 V4_DIR="$fixture/v4"
 V6_DIR="$fixture/v6"
 mkdir -p "$V4_DIR" "$V6_DIR"
-for fn in parse_archive_epoch find_matching_v6 fmt_timestamp view_archives; do
+for fn in parse_archive_epoch is_archive_timestamp load_archive_epochs read_archive_metadata find_matching_v6 fmt_timestamp view_archives; do
     eval "$(sed -n "/^${fn}()/,/^}/p" "$root/ipqa.sh")"
 done
 
@@ -41,11 +41,38 @@ clear() { :; }
 print_module_header() { :; }
 jq() { printf '.\n' >> "$fixture/jq-calls"; command jq "$@"; }
 view_archives <<< $'p\n0' > "$fixture/menu-output"
-[[ $(wc -l < "$fixture/jq-calls") -eq 2 ]]
+[[ $(wc -l < "$fixture/jq-calls") -eq 1 ]]
 grep -q '192.0.2.1' "$fixture/menu-output"
 grep -q '2001:db8::1' "$fixture/menu-output"
 grep -q '(Japan)' "$fixture/menu-output"
 printf '{"Head":{"IP":"192.0.2.2"}}' > "$V4_DIR/2026-10-28_000100.json"
 view_archives <<< '0' > "$fixture/menu-output"
 grep -q '192.0.2.2' "$fixture/menu-output"
+# Batch parsing must isolate bad JSON and preserve empty fields and spaces.
+printf '{broken' > "$V4_DIR/broken.json"
+printf '{"Head":{"IP":"192.0.2.3"},"Info":{"Region":{"Name":"New Zealand"}}}' > "$V4_DIR/with space.json"
+read_archive_metadata "$V4_DIR/broken.json" "$V4_DIR/with space.json" > "$fixture/batch"
+grep -q '192.0.2.3' "$fixture/batch"
+grep -q 'New Zealand' "$fixture/batch"
+# Menu indexing also preserves cross-midnight matches with different timestamps.
+V4_DIR="$fixture/midnight/v4"
+V6_DIR="$fixture/midnight/v6"
+mkdir -p "$V4_DIR" "$V6_DIR"
+printf '{"Head":{"IP":"192.0.2.4"}}' > "$V4_DIR/2026-10-28_000100.json"
+printf '{"Head":{"IP":"2001:db8::4"}}' > "$V6_DIR/2026-10-27_23-59-50.json"
+view_archives <<< '0' > "$fixture/midnight-output"
+grep 'v4: 192.0.2.4' "$fixture/midnight-output" | grep -q 'v6: 2001:db8::4'
+[[ -z $(load_archive_epochs '2026-10-28_00-0100') ]]
+# Entering an archive number outside the visible page must still pair IPv6.
+V4_DIR="$fixture/jump/v4"
+V6_DIR="$fixture/jump/v6"
+mkdir -p "$V4_DIR" "$V6_DIR"
+for ((day=1; day<=20; day++)); do
+    printf -v stamp '2026-10-%02d' "$day"
+    printf '{"Head":{"IP":"192.0.2.5"}}' > "$V4_DIR/${stamp}_040000.json"
+    printf '{"Head":{"IP":"2001:db8::5"}}' > "$V6_DIR/${stamp}_040030.json"
+done
+render_archive_snapshot() { printf '%s\n' "$2" > "$fixture/selected"; }
+view_archives <<< $'40\n0' > "$fixture/jump-output"
+[[ $(cat "$fixture/selected") == "$V6_DIR/2026-10-01_040030.json" ]]
 echo 'PASS: bounded archive matching, midnight/threshold/format compatibility, menu cache and region fallback'

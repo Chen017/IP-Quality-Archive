@@ -2951,6 +2951,51 @@ parse_archive_epoch() {
     fi
 }
 
+# One date process parses each timestamp batch. Its output uses canonical keys
+# shared by all three supported filename formats; invalid dates stay absent.
+is_archive_timestamp() {
+    [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}$ ||
+       "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}$ ||
+       "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]
+}
+
+load_archive_epochs() {
+    local neighbors=false
+    if [[ "${1:-}" == --neighbors ]]; then
+        neighbors=true
+        shift
+    fi
+    local ts clock
+    for ts in "$@"; do
+        if is_archive_timestamp "$ts"; then
+            clock=${ts:11}
+            clock=${clock//[-:]/}
+            printf '%s %s:%s:%s\n' "${ts:0:10}" "${clock:0:2}" "${clock:2:2}" "${clock:4:2}"
+            if [[ "$neighbors" == true ]]; then
+                printf '%s %s:%s:%s 300 seconds ago\n' "${ts:0:10}" "${clock:0:2}" "${clock:2:2}" "${clock:4:2}"
+                printf '%s %s:%s:%s 300 seconds\n' "${ts:0:10}" "${clock:0:2}" "${clock:2:2}" "${clock:4:2}"
+            fi
+        fi
+    done | date -f - '+%Y-%m-%d_%H%M%S %s' 2>/dev/null
+}
+
+# Frame each complete file with NUL separators, then parse the visible page in
+# one jq process. A malformed file cannot prevent the remaining rows loading.
+read_archive_metadata() {
+    local file content
+    for file in "$@"; do
+        [[ -f "$file" ]] || continue
+        content=$(<"$file")
+        printf '%s\0%s\0' "$file" "$content"
+    done | jq -Rrsj '
+        split("\u0000") as $parts |
+        range(0; ($parts | length) - 1; 2) as $i |
+        ($parts[$i + 1] | try fromjson catch {}) as $report |
+        (try ([$parts[$i], ($report.Head.IP // "未知"), ($report.Info.Region.Name // "")] | join("\u001f"))
+        catch ([$parts[$i], "未知", ""] | join("\u001f"))) + "\u0000"
+    ' 2>/dev/null
+}
+
 find_matching_v6() {
     local target_ts="$1"
     local direct="$V6_DIR/${target_ts}.json"
@@ -2962,8 +3007,41 @@ find_matching_v6() {
 
     # S-06: 精确解析 YYYY-MM-DD_HHMMSS 时间戳进行近邻匹配 (阈值 300 秒)
     local target_epoch=0
-    target_epoch=$(parse_archive_epoch "$target_ts")
+    local index_ready=${archive_epoch_index_ready:-false}
+    local time_key=${target_ts:11}
+    time_key=${time_key//[-:]/}
+    if [[ "$index_ready" == true ]]; then
+        is_archive_timestamp "$target_ts" || return 0
+        # archive_epochs is local to the calling view_archives menu.
+        target_epoch=${archive_epochs[${target_ts:0:10}_${time_key}]:-0}
+    else
+        target_epoch=$(parse_archive_epoch "$target_ts")
+    fi
     (( target_epoch > 0 )) || return 0
+
+    if [[ "$index_ready" == true ]]; then
+        local bucket candidates="" indexed_name indexed_epoch indexed_diff
+        local indexed_best="" indexed_min=301
+        # UTC-day buckets bound the search even when years of local archives
+        # exist. Checking adjacent buckets also preserves midnight/DST matches.
+        for ((bucket=target_epoch / 86400 - 1; bucket<=target_epoch / 86400 + 1; bucket++)); do
+            candidates+=${archive_v6_buckets[$bucket]-}
+        done
+        while IFS= read -r indexed_name; do
+            [[ -z "$indexed_name" ]] && continue
+            time_key=${indexed_name:11}
+            time_key=${time_key//[-:]/}
+            indexed_epoch=${archive_epochs[${indexed_name:0:10}_${time_key}]:-0}
+            indexed_diff=$(( indexed_epoch - target_epoch ))
+            (( indexed_diff < 0 )) && indexed_diff=$(( -indexed_diff ))
+            if (( indexed_diff <= 300 )) && { (( indexed_diff < indexed_min )) || { (( indexed_diff == indexed_min )) && [[ "$indexed_name" < "$indexed_best" ]]; }; }; then
+                indexed_min=$indexed_diff
+                indexed_best=$indexed_name
+            fi
+        done <<< "$candidates"
+        [[ -n "$indexed_best" ]] && printf '%s\n' "$V6_DIR/$indexed_best.json"
+        return 0
+    fi
 
     # Only dates intersecting the 300-second window can match. Avoid spawning
     # date for every old archive on every visible list row (also covers midnight).
@@ -3173,7 +3251,7 @@ show_alerts_history() {
 # ==============================================================================
 view_archives() {
     # 收集全部不重复的时间戳 (双栈一体，无需区分选择)
-    local all_ts=()
+    local all_ts=() v6_names=()
     local f filename
     for f in "$V4_DIR"/*.json; do
         if [[ -f "$f" ]]; then
@@ -3185,6 +3263,7 @@ view_archives() {
         if [[ -f "$f" ]]; then
             filename=${f##*/}
             all_ts+=("${filename%.json}")
+            v6_names+=("${filename%.json}")
         fi
     done
 
@@ -3204,53 +3283,103 @@ view_archives() {
     local total_count=${#sorted_ts[@]}
     local total_pages=$(( (total_count + page_size - 1) / page_size ))
     # Menu-local caches disappear on return; reopening sees fresh archives.
-    local -A v6_matches=() metadata=()
+    local -A v6_matches=() metadata=() archive_epochs=() archive_v6_buckets=() indexed_pages=() indexed_v6=()
+    local archive_epoch_index_ready=true
 
     while true; do
-        clear
-        print_module_header "📋 历史存档图表快照查看"
-
         local start_idx=$((page * page_size))
         local end_idx=$((start_idx + page_size))
         (( end_idx > total_count )) && end_idx=$total_count
 
-        echo -e "最近检测归档列表 (共 ${total_count} 条，第 $((page + 1))/${total_pages} 页):\n"
+        if [[ ! ${indexed_pages[$page]+cached} ]]; then
+            # Index only the visible dates and possible 300-second neighbors.
+            # Opening page one must not parse years of unrelated old archives.
+            local -A wanted_days=()
+            local key epoch clock
+            while read -r key epoch; do
+                [[ -n "$key" && "$epoch" =~ ^[0-9]+$ ]] || continue
+                wanted_days[${key:0:10}]=1
+            done < <(load_archive_epochs --neighbors "${sorted_ts[@]:start_idx:end_idx-start_idx}")
+            local candidates=()
+            for filename in "${v6_names[@]}"; do
+                if [[ ${wanted_days[${filename:0:10}]+wanted} && ! ${indexed_v6[$filename]+cached} ]]; then
+                    candidates+=("$filename")
+                fi
+            done
+            # Parse actual filenames separately from relative boundary times,
+            # preserving date's choice for ambiguous DST wall-clock times.
+            while read -r key epoch; do
+                [[ -n "$key" && "$epoch" =~ ^[0-9]+$ ]] && archive_epochs[$key]=$epoch
+            done < <(load_archive_epochs "${sorted_ts[@]:start_idx:end_idx-start_idx}" "${candidates[@]}")
+            if (( ${#candidates[@]} > 0 )); then
+                for filename in "${candidates[@]}"; do
+                    indexed_v6[$filename]=1
+                    is_archive_timestamp "$filename" || continue
+                    clock=${filename:11}
+                    clock=${clock//[-:]/}
+                    epoch=${archive_epochs[${filename:0:10}_${clock}]:-0}
+                    if (( epoch > 0 )); then
+                        archive_v6_buckets[$((epoch / 86400))]+="$filename"$'\n'
+                    fi
+                done
+            fi
+            indexed_pages[$page]=1
+        fi
+
+        # Resolve the visible page first, then read all missing metadata at once.
+        local page_files=()
+        for ((i=start_idx; i<end_idx; i++)); do
+            local ts="${sorted_ts[$i]}"
+            local f_v4="$V4_DIR/${ts}.json"
+            if [[ ! ${v6_matches[$ts]+cached} ]]; then
+                v6_matches[$ts]=$(find_matching_v6 "$ts")
+            fi
+            local f_v6=${v6_matches[$ts]}
+            if [[ -f "$f_v4" && ! ${metadata[$f_v4]+cached} ]]; then
+                page_files+=("$f_v4")
+            fi
+            if [[ -n "$f_v6" && -f "$f_v6" && ! ${metadata[$f_v6]+cached} ]]; then
+                page_files+=("$f_v6")
+            fi
+        done
+        if (( ${#page_files[@]} > 0 )); then
+            local meta_file meta_ip meta_loc
+            while IFS=$'\x1f' read -r -d '' meta_file meta_ip meta_loc; do
+                [[ -n "$meta_file" ]] && metadata[$meta_file]="$meta_ip"$'\x1f'"$meta_loc"
+            done < <(read_archive_metadata "${page_files[@]}")
+        fi
+
+        # Buffer the full page so the terminal never reveals slow rows one by one.
+        local page_rows=() row
         for ((i=start_idx; i<end_idx; i++)); do
             local ts="${sorted_ts[$i]}"
             local dt
             dt=$(fmt_timestamp "$ts")
-
             local f_v4="$V4_DIR/${ts}.json"
-            local f_v6
-            if [[ ! ${v6_matches[$ts]+cached} ]]; then
-                v6_matches[$ts]=$(find_matching_v6 "$ts")
-            fi
-            f_v6=${v6_matches[$ts]}
-
+            local f_v6=${v6_matches[$ts]}
             local ip_v4="无"
             local ip_v6="无"
             local loc_str=""
 
             if [[ -f "$f_v4" ]]; then
-                if [[ ! ${metadata[$f_v4]+cached} ]]; then
-                    metadata[$f_v4]=$(jq -r '[(.Head.IP // "未知"), (.Info.Region.Name // "")] | join("\u001f")' "$f_v4" 2>/dev/null)
-                fi
-                IFS=$'\x1f' read -r ip_v4 loc_str <<< "${metadata[$f_v4]}"
+                IFS=$'\x1f' read -r ip_v4 loc_str <<< "${metadata[$f_v4]:-}"
             fi
             if [[ -n "$f_v6" && -f "$f_v6" ]]; then
-                if [[ ! ${metadata[$f_v6]+cached} ]]; then
-                    metadata[$f_v6]=$(jq -r '[(.Head.IP // "未知"), (.Info.Region.Name // "")] | join("\u001f")' "$f_v6" 2>/dev/null)
-                fi
                 local loc_v6
-                IFS=$'\x1f' read -r ip_v6 loc_v6 <<< "${metadata[$f_v6]}"
+                IFS=$'\x1f' read -r ip_v6 loc_v6 <<< "${metadata[$f_v6]:-}"
                 [[ -z "$loc_str" || "$loc_str" == "null" ]] && loc_str=$loc_v6
             fi
             [[ "$loc_str" == "null" ]] && loc_str=""
 
-            printf "  ${C_BOLD}[%2d]${C_RESET} %-19s │ ${C_GREEN}v4:${C_RESET} %-15s │ ${C_CYAN}v6:${C_RESET} %-18s │ %s\n" \
+            printf -v row "  ${C_BOLD}[%2d]${C_RESET} %-19s │ ${C_GREEN}v4:${C_RESET} %-15s │ ${C_CYAN}v6:${C_RESET} %-18s │ %s" \
                 "$((i + 1))" "$dt" "${ip_v4:0:15}" "${ip_v6:0:18}" "${loc_str:+($loc_str)}"
+            page_rows+=("$row")
         done
 
+        clear
+        print_module_header "📋 历史存档图表快照查看"
+        echo -e "最近检测归档列表 (共 ${total_count} 条，第 $((page + 1))/${total_pages} 页):\n"
+        printf '%s\n' "${page_rows[@]}"
         echo ""
         local nav_hint=""
         (( page + 1 < total_pages )) && nav_hint+="[n] 下一页 | "
@@ -3273,7 +3402,11 @@ view_archives() {
             local chosen_ts="${sorted_ts[$((opt_act - 1))]}"
             local sel_v4="$V4_DIR/${chosen_ts}.json"
             local sel_v6
-            sel_v6=$(find_matching_v6 "$chosen_ts")
+            sel_v6=${v6_matches[$chosen_ts]-}
+            if [[ ! ${v6_matches[$chosen_ts]+cached} ]]; then
+                # A user may enter a valid index outside the visible page.
+                sel_v6=$(archive_epoch_index_ready=false find_matching_v6 "$chosen_ts")
+            fi
             render_archive_snapshot "$sel_v4" "$sel_v6" "$chosen_ts"
         fi
     done

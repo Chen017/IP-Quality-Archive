@@ -2963,6 +2963,13 @@ find_matching_v6() {
     # S-06: 精确解析 YYYY-MM-DD_HHMMSS 时间戳进行近邻匹配 (阈值 300 秒)
     local target_epoch=0
     target_epoch=$(parse_archive_epoch "$target_ts")
+    (( target_epoch > 0 )) || return 0
+
+    # Only dates intersecting the 300-second window can match. Avoid spawning
+    # date for every old archive on every visible list row (also covers midnight).
+    local first_day last_day
+    first_day=$(date -d "@$((target_epoch - 300))" +%Y-%m-%d)
+    last_day=$(date -d "@$((target_epoch + 300))" +%Y-%m-%d)
 
     local best_file=""
     local min_diff=999999
@@ -2970,7 +2977,10 @@ find_matching_v6() {
     for f6 in "$V6_DIR"/*.json; do
         [[ ! -f "$f6" ]] && continue
         local fn6
-        fn6=$(basename "$f6" .json)
+        fn6=${f6##*/}
+        fn6=${fn6%.json}
+        local day=${fn6:0:10}
+        [[ "$day" < "$first_day" || "$day" > "$last_day" ]] && continue
         if [[ "$fn6" == "$target_ts" ]]; then
             echo "$f6"
             return
@@ -3164,11 +3174,18 @@ show_alerts_history() {
 view_archives() {
     # 收集全部不重复的时间戳 (双栈一体，无需区分选择)
     local all_ts=()
+    local f filename
     for f in "$V4_DIR"/*.json; do
-        [[ -f "$f" ]] && all_ts+=("$(basename "$f" .json)")
+        if [[ -f "$f" ]]; then
+            filename=${f##*/}
+            all_ts+=("${filename%.json}")
+        fi
     done
     for f in "$V6_DIR"/*.json; do
-        [[ -f "$f" ]] && all_ts+=("$(basename "$f" .json)")
+        if [[ -f "$f" ]]; then
+            filename=${f##*/}
+            all_ts+=("${filename%.json}")
+        fi
     done
 
     if [[ ${#all_ts[@]} -eq 0 ]]; then
@@ -3186,6 +3203,8 @@ view_archives() {
     local page_size=15
     local total_count=${#sorted_ts[@]}
     local total_pages=$(( (total_count + page_size - 1) / page_size ))
+    # Menu-local caches disappear on return; reopening sees fresh archives.
+    local -A v6_matches=() metadata=()
 
     while true; do
         clear
@@ -3203,19 +3222,28 @@ view_archives() {
 
             local f_v4="$V4_DIR/${ts}.json"
             local f_v6
-            f_v6=$(find_matching_v6 "$ts")
+            if [[ ! ${v6_matches[$ts]+cached} ]]; then
+                v6_matches[$ts]=$(find_matching_v6 "$ts")
+            fi
+            f_v6=${v6_matches[$ts]}
 
             local ip_v4="无"
             local ip_v6="无"
             local loc_str=""
 
             if [[ -f "$f_v4" ]]; then
-                ip_v4=$(jq -r '.Head.IP // "未知"' "$f_v4" 2>/dev/null)
-                loc_str=$(jq -r '.Info.Region.Name // ""' "$f_v4" 2>/dev/null)
+                if [[ ! ${metadata[$f_v4]+cached} ]]; then
+                    metadata[$f_v4]=$(jq -r '[(.Head.IP // "未知"), (.Info.Region.Name // "")] | join("\u001f")' "$f_v4" 2>/dev/null)
+                fi
+                IFS=$'\x1f' read -r ip_v4 loc_str <<< "${metadata[$f_v4]}"
             fi
             if [[ -n "$f_v6" && -f "$f_v6" ]]; then
-                ip_v6=$(jq -r '.Head.IP // "未知"' "$f_v6" 2>/dev/null)
-                [[ -z "$loc_str" || "$loc_str" == "null" ]] && loc_str=$(jq -r '.Info.Region.Name // ""' "$f_v6" 2>/dev/null)
+                if [[ ! ${metadata[$f_v6]+cached} ]]; then
+                    metadata[$f_v6]=$(jq -r '[(.Head.IP // "未知"), (.Info.Region.Name // "")] | join("\u001f")' "$f_v6" 2>/dev/null)
+                fi
+                local loc_v6
+                IFS=$'\x1f' read -r ip_v6 loc_v6 <<< "${metadata[$f_v6]}"
+                [[ -z "$loc_str" || "$loc_str" == "null" ]] && loc_str=$loc_v6
             fi
             [[ "$loc_str" == "null" ]] && loc_str=""
 

@@ -866,6 +866,11 @@ if bash "$REPO_ROOT/tests/test_review_fixes.sh"; then
 else
     fail "审查修复回归" "安装路径或别名异常"
 fi
+if bash "$REPO_ROOT/tests/test_archive_performance.sh"; then
+    pass "存档近邻匹配、跨午夜与列表缓存回归"
+else
+    fail "存档性能回归" "匹配或列表显示异常"
+fi
 echo "测试结果汇总: 总计 $TESTS_RUN 项测试, 通过: $TESTS_PASSED, 失败: $TESTS_FAILED"
 echo "=============================================================================="
 

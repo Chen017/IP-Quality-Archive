@@ -27,6 +27,14 @@ printf '{}' > "$V6_DIR/2026-10-28_000100.json"
 [[ $(find_matching_v6 '2026-10-28_000100') == "$V6_DIR/2026-10-28_000100.json" ]]
 [[ -z $(find_matching_v6 'invalid') ]]
 
+# Equal-distance candidates retain lexicographic order. The spring clock jump
+# changes the wall time by an hour but only ten seconds of elapsed time.
+printf '{}' > "$V6_DIR/2026-10-28_010000.json"
+printf '{}' > "$V6_DIR/2026-10-28_010020.json"
+[[ $(find_matching_v6 '2026-10-28_010010') == "$V6_DIR/2026-10-28_010000.json" ]]
+printf '{}' > "$V6_DIR/2026-03-08_015950.json"
+[[ $(TZ=America/New_York find_matching_v6 '2026-03-08_030000') == "$V6_DIR/2026-03-08_015950.json" ]]
+
 # Empty IPv4 region must still fall back to IPv6. Repainting the same menu
 # page must reuse its parsed metadata; reopening the menu reads fresh files.
 mkdir -p "$fixture/menu/v4" "$fixture/menu/v6"

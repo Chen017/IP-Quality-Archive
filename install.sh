@@ -142,7 +142,7 @@ do_uninstall() {
                 echo "拒绝删除: 目标不是可验证的 IPQA 安装目录" >&2
                 exit 1
             fi
-            rm -rf "$INSTALL_DIR"
+            rm -rf -- "$INSTALL_DIR"
             echo -e "${C_GREEN}✔ 已彻底删除 $INSTALL_DIR${C_RESET}"
         fi
     else
@@ -464,7 +464,7 @@ patch_ip_script() {
         return 1
     fi
     chmod --reference="$target" "$patched" || { rm -f "$patched"; return 1; }
-    mv -f "$patched" "$target" || { rm -f "$patched"; return 1; }
+    mv -fT -- "$patched" "$target" || { rm -f "$patched"; return 1; }
 
     return 0
 }
@@ -522,15 +522,19 @@ safe_download() {
 
     sed -i 's/\r$//' "$tmp" 2>/dev/null || true
     chmod +x "$tmp" 2>/dev/null || true
-    mv -f "$tmp" "$dest"
-    return 0
+    mv -fT -- "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
 }
 
 # 3. 安装主程序文件
 echo -e "\n${C_BOLD}[3/5] 安装 IPQA 主程序...${C_RESET}"
 if [[ -f "$SCRIPT_DIR/ipqa.sh" ]]; then
-    cp "$SCRIPT_DIR/ipqa.sh" "$INSTALL_DIR/ipqa.sh"
-    chmod 755 "$INSTALL_DIR/ipqa.sh"
+    tmp_main="$INSTALL_DIR/.ipqa.sh.tmp.$$.$RANDOM"
+    if ! cp -- "$SCRIPT_DIR/ipqa.sh" "$tmp_main" || ! chmod 755 "$tmp_main" ||
+       ! mv -fT -- "$tmp_main" "$INSTALL_DIR/ipqa.sh"; then
+        rm -f -- "$tmp_main"
+        echo -e "${C_RED}错误: 无法安装本地主程序${C_RESET}"
+        exit 1
+    fi
 else
     echo -e "${C_CYAN}从远程获取 ipqa.sh...${C_RESET}"
     if ! safe_download "https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh" "$INSTALL_DIR/ipqa.sh" "ipqa"; then
@@ -557,12 +561,14 @@ if [[ -n "$local_core_src" ]]; then
     sed -i 's/\r$//' "$tmp_local" 2>/dev/null || true
     if [[ $(wc -c < "$tmp_local" 2>/dev/null || echo 0) -ge 3000 ]] && bash -n "$tmp_local" 2>/dev/null && patch_ip_script "$tmp_local" && bash -n "$tmp_local" 2>/dev/null && grep -qE "IPQuality|Check_DNS|IP\.Check\.Place|script_version" "$tmp_local" 2>/dev/null; then
         chmod +x "$tmp_local" 2>/dev/null || true
-        mv -f "$tmp_local" "$INSTALL_DIR/ip.sh"
-        echo -e "${C_GREEN}✔ 已自本地同步并修补 IPQuality 引擎缓存${C_RESET}"
-        core_installed=true
-    else
+        if mv -fT -- "$tmp_local" "$INSTALL_DIR/ip.sh"; then
+            echo -e "${C_GREEN}✔ 已自本地同步并修补 IPQuality 引擎缓存${C_RESET}"
+            core_installed=true
+        fi
+    fi
+    if [[ "$core_installed" != "true" ]]; then
         rm -f "$tmp_local"
-        echo -e "${C_YELLOW}⚠ 本地 IPQuality 引擎语法或修补校验失败，尝试在线下载...${C_RESET}"
+        echo -e "${C_YELLOW}⚠ 本地 IPQuality 引擎校验、修补或写入失败，尝试在线下载...${C_RESET}"
     fi
 fi
 
@@ -617,6 +623,12 @@ get_beijing_00_local_minute() {
         m=$(( m % 60 ))
     fi
     printf "%02d" "$m"
+}
+
+# Cron 先处理百分号，再把命令交给 shell；两层都需要转义。
+escape_cron_path() {
+    [[ "$1" != *$'\n'* && "$1" != *$'\r'* ]] || return 1
+    printf '%s' "$1" | sed -e 's/[\\"$`]/\\&/g' -e 's/%/\\%/g'
 }
 
 # 初始化配置文件
@@ -710,15 +722,20 @@ else
 
             # M-19, M-20: 结合半小时/45分钟时区的分钟换算与北京时间校验，路径进行 shell 安全转义
             local_min=$(get_beijing_00_local_minute)
-            cron_entry="$local_min * * * * [ \"\$(TZ='Asia/Shanghai' date +\\%H:\\%M)\" = \"04:00\" ] && \"$CRON_BIN\" --cron >> \"$INSTALL_DIR/logs/ipqa.log\" 2>&1"
-            if {
+            if esc_script=$(escape_cron_path "$CRON_BIN") &&
+               esc_log=$(escape_cron_path "$INSTALL_DIR/logs/ipqa.log"); then
+                cron_entry="$local_min * * * * [ \"\$(TZ='Asia/Shanghai' date +\\%H:\\%M)\" = \"04:00\" ] && \"$esc_script\" --cron >> \"$esc_log\" 2>&1"
+            else
+                cron_entry=""
+            fi
+            if [[ -n "$cron_entry" ]] && {
                 [[ -n "$existing" ]] && echo "$existing"
                 echo "# IPQA AUTO CHECK - DO NOT EDIT MANUALLY"
                 echo "$cron_entry"
             } | crontab -; then
                 echo -e "${C_GREEN}✔ 已为您激活每天定时检测 (北京时间 04:00, 自动适配夏令时/时区)${C_RESET}"
             else
-                echo -e "${C_YELLOW}⚠ 定时任务自动写入失败，请检查 crontab 权限${C_RESET}"
+                echo -e "${C_YELLOW}⚠ 定时任务自动写入失败，请检查路径和 crontab 权限${C_RESET}"
             fi
         fi
 

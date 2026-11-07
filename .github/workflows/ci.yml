@@ -2,46 +2,57 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+    paths-ignore:
+      - README.md
+      - 'docs/**'
+      - 'pics/**'
   pull_request:
-    branches: [ main ]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    name: Syntax & Regression Tests (${{ matrix.awk }})
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        awk: [mawk, gawk]
+    name: Offline checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Install dependencies
+      - name: Ensure test tools are available
         run: |
-          sudo apt-get update
-          sudo apt-get install -y jq curl cron shellcheck mawk gawk
+          missing=()
+          for tool in jq curl shellcheck mawk gawk; do
+            command -v "$tool" >/dev/null || missing+=("$tool")
+          done
+          command -v flock >/dev/null || missing+=(util-linux)
+          if (( ${#missing[@]} )); then
+            sudo apt-get update
+            sudo apt-get install -y "${missing[@]}"
+          fi
 
-      - name: Select awk implementation
-        run: |
-          mkdir -p "$RUNNER_TEMP/ipqa-test-bin"
-          ln -s "$(command -v ${{ matrix.awk }})" "$RUNNER_TEMP/ipqa-test-bin/awk"
-          echo "$RUNNER_TEMP/ipqa-test-bin" >> "$GITHUB_PATH"
+      - name: Check Bash syntax and ShellCheck
+        id: static
+        run: bash tests/check.sh
 
-      - name: Run ShellCheck static analysis
-        run: |
-          shellcheck -S warning -e SC2181,SC1090,SC1091,SC2086 install.sh ipqa.sh tests/test_suite.sh tests/test_dbip.sh tests/test_lite.sh tests/test_awk_compat.sh
+      - name: Test with mawk
+        run: bash tests/test_suite.sh mawk
 
-      - name: Verify Bash syntax
-        run: |
-          bash -n install.sh
-          bash -n ipqa.sh
-          bash -n tests/test_suite.sh
-          bash -n tests/test_dbip.sh
-          bash -n tests/test_lite.sh
-          bash -n tests/test_awk_compat.sh
+      - name: Test with gawk
+        if: ${{ !cancelled() && steps.static.outcome == 'success' }}
+        run: bash tests/test_suite.sh gawk
 
-      - name: Run regression test suite
+      - name: Build and smoke-test the install bundle
         run: |
-          chmod +x tests/test_suite.sh
-          ./tests/test_suite.sh
+          bundle="$RUNNER_TEMP/ipqa.tar.gz"
+          bash scripts/package.sh "$bundle"
+          bash tests/test_install_bundle.sh "$bundle"

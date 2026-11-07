@@ -108,6 +108,16 @@ get_current_pid() {
 }
 
 # 进程并发锁控制 (M-08A, M-08B: 统一主锁、原子恢复、所有者校验与可重入嵌套深度支持)
+create_owned_lock() {
+    local lock_dir="$1"
+    mkdir "$lock_dir" 2>/dev/null || return 1
+    if ! printf '%s\n' "$2" > "$lock_dir/pid"; then
+        rm -f -- "$lock_dir/pid"
+        rmdir -- "$lock_dir"
+        return 1
+    fi
+}
+
 acquire_lock() {
     local lock_name="${1:-main}"
     local my_pid
@@ -124,8 +134,7 @@ acquire_lock() {
     local pid_file="$lock_dir/pid"
 
     # 1. 尝试原子创建锁目录
-    if mkdir "$lock_dir" 2>/dev/null; then
-        echo "$my_pid" > "$pid_file" 2>/dev/null || true
+    if create_owned_lock "$lock_dir" "$my_pid"; then
         eval "${depth_var}=1"
         return 0
     fi
@@ -139,16 +148,18 @@ acquire_lock() {
             return 0
         fi
 
-        # 3. 检查持有者是否已死亡 (stale-lock 原子恢复 M-08B)
-        if [[ -n "$current_lock_pid" ]] && ! kill -0 "$current_lock_pid" 2>/dev/null; then
+        # 3. 串行恢复失效锁，防止后到的恢复者移动已重建的锁目录。
+        if [[ "$current_lock_pid" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$current_lock_pid" 2>/dev/null; then
             local stale_mv="$IPQA_HOME/.lock_stale_${lock_name}_${my_pid}.$RANDOM"
-            if mv "$lock_dir" "$stale_mv" 2>/dev/null; then
-                rm -rf "$stale_mv" 2>/dev/null || true
-                if mkdir "$lock_dir" 2>/dev/null; then
-                    echo "$my_pid" > "$pid_file" 2>/dev/null || true
-                    eval "${depth_var}=1"
-                    return 0
-                fi
+            if (
+                flock -n 9 || exit 1
+                [[ $(cat "$pid_file" 2>/dev/null) == "$current_lock_pid" ]] || exit 1
+                mv -T -- "$lock_dir" "$stale_mv" 2>/dev/null || exit 1
+                rm -rf -- "$stale_mv" 2>/dev/null || true
+                create_owned_lock "$lock_dir" "$my_pid"
+            ) 9>>"$lock_dir.reclaim"; then
+                eval "${depth_var}=1"
+                return 0
             fi
         fi
     fi
@@ -593,7 +604,7 @@ patch_ip_script() {
         return 1
     fi
     chmod --reference="$target" "$patched" || { rm -f "$patched"; return 1; }
-    mv -f "$patched" "$target" || { rm -f "$patched"; return 1; }
+    mv -fT -- "$patched" "$target" || { rm -f "$patched"; return 1; }
 
     local tmp_patch
 
@@ -717,11 +728,9 @@ ensure_ip_script() {
     fi
 
     if [[ "$source_found" == "true" && -f "$tmp_ip" ]]; then
-        if validate_and_patch_core_candidate "$tmp_ip"; then
-            mv -f "$tmp_ip" "$IP_SCRIPT"
-        else
+        if ! validate_and_patch_core_candidate "$tmp_ip" || ! mv -fT -- "$tmp_ip" "$IP_SCRIPT"; then
             rm -f "$tmp_ip" 2>/dev/null || true
-            echo -e "${C_RED}错误: IPQuality 脚本 patch 或语法校验失败${C_RESET}"
+            echo -e "${C_RED}错误: IPQuality 脚本校验、修补或写入失败${C_RESET}"
             return 1
         fi
     else
@@ -797,13 +806,16 @@ auto_update_if_needed() {
                     if [[ -f "$IP_SCRIPT" ]] && cmp -s "$tmp_ip" "$IP_SCRIPT"; then
                         rm -f "$tmp_ip"
                         log_msg "INFO" "IPQuality 检测核心内容已是最新"
-                    else
-                        mv -f "$tmp_ip" "$IP_SCRIPT"
+                        echo "$now_sec" > "$stamp_core"
+                    elif mv -fT -- "$tmp_ip" "$IP_SCRIPT"; then
                         local new_ver
                         new_ver=$(grep -m 1 'script_version=' "$IP_SCRIPT" 2>/dev/null | cut -d '"' -f 2)
                         log_msg "INFO" "检测核心自动更新成功，版本: ${new_ver:-未知}"
+                        echo "$now_sec" > "$stamp_core"
+                    else
+                        rm -f "$tmp_ip"
+                        log_msg "WARN" "无法写入检测核心更新，继续使用本地核心"
                     fi
-                    echo "$now_sec" > "$stamp_core"
                 else
                     rm -f "$tmp_ip"
                     log_msg "WARN" "检测核心 patch 规则应用或语法校验失败，保留本地核心"
@@ -826,11 +838,14 @@ auto_update_if_needed() {
                         if [[ -f "$IPQA_HOME/ipqa.sh" ]] && cmp -s "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"; then
                             rm -f "$tmp_ipqa"
                             log_msg "INFO" "IPQA 脚本已是最新版本"
-                        else
-                            mv -f "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"
+                            echo "$now_sec" > "$stamp_script"
+                        elif mv -fT -- "$tmp_ipqa" "$IPQA_HOME/ipqa.sh"; then
                             log_msg "INFO" "自动静默更新 IPQA 脚本成功"
+                            echo "$now_sec" > "$stamp_script"
+                        else
+                            rm -f "$tmp_ipqa"
+                            log_msg "WARN" "无法写入 IPQA 脚本更新，继续使用当前脚本"
                         fi
-                        echo "$now_sec" > "$stamp_script"
                     else
                         rm -f "$tmp_ipqa"
                         log_msg "WARN" "自动更新 IPQA 脚本校验失败，保留当前脚本"
@@ -1222,7 +1237,8 @@ compare_and_alert() {
             local svc_disp="$svc"
             [[ "$svc" == "AmazonPrimeVideo" ]] && svc_disp="AmazonPV"
             [[ "$svc" == "DisneyPlus" ]] && svc_disp="Disney+"
-            if [[ "$new_status" =~ (失败|屏蔽|No|Blocked|Block|Failed|中国|China|禁会员|NoPrem) || ( "$old_status" =~ (解锁|Yes|Native) && "$new_status" =~ (仅自制|NF\.Only|仅网页|WebOnly|仅APP|APPOnly|机房|IDC|待支持|Pending) ) ]]; then
+            if media_is_blocked "$new_status" ||
+               [[ "$new_status" =~ (失败|屏蔽|No|Blocked|Block|Failed|中国|China|禁会员|NoPrem) || ( "$old_status" =~ (解锁|Yes|Native) && "$new_status" =~ (仅自制|NF\.Only|仅网页|WebOnly|仅APP|APPOnly|机房|IDC|待支持|Pending) ) ]]; then
                 add_alert "CRITICAL" "$svc_disp 解锁状态发生降级: [$old_status] 变为 [$new_status]" "$ip_ver"
             elif [[ "$old_status" =~ (仅自制|NF\.Only) && "$new_status" =~ (仅网页|WebOnly|仅APP|APPOnly|机房|IDC|待支持|Pending) ]]; then
                 add_alert "WARNING" "$svc_disp 解锁状态发生降级: [$old_status] 变为 [$new_status]" "$ip_ver"
@@ -1413,16 +1429,15 @@ run_check() {
     done < <(grep -oE '\[IPQA DB-IP\].*' "$v4_stderr" || true)
     rm -f "$v4_stderr"
 
-    if validate_ipqa_report "$v4_tmp" v4; then
-        mv "$v4_tmp" "$v4_out"
+    if validate_ipqa_report "$v4_tmp" v4 && mv -fT -- "$v4_tmp" "$v4_out"; then
         v4_success=true
         [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPv4 检测完成并已有效存档: $(basename "$v4_out")${C_RESET}"
         log_msg "INFO" "IPv4 检测成功: $v4_out"
         compare_and_alert "$V4_DIR" "$v4_out" "IPv4"
     else
         rm -f "$v4_tmp" 2>/dev/null || true
-        [[ "$quiet" == "false" ]] && echo -e "${C_YELLOW}⚠ IPv4 检测未生成有效 JSON (可能网络超时或接口受限)${C_RESET}"
-        log_msg "WARN" "IPv4 检测生成数据无效，已自动清理"
+        [[ "$quiet" == "false" ]] && echo -e "${C_YELLOW}⚠ IPv4 检测未生成有效存档，请检查网络和目录权限${C_RESET}"
+        log_msg "WARN" "IPv4 检测报告无效或无法写入存档"
     fi
 
     # 判断是否需要执行 IPv6 检测
@@ -1445,10 +1460,7 @@ run_check() {
         bash "$IP_SCRIPT" -6 -y -n -p -o "$v6_tmp" >/dev/null 2>&1
 
         if validate_ipqa_report "$v6_tmp" v6; then
-            local v6_ip
-            v6_ip=$(jq -r '.Head.IP // empty' "$v6_tmp")
-            if [[ -n "$v6_ip" && "$v6_ip" != "null" ]]; then
-                mv "$v6_tmp" "$v6_out"
+            if mv -fT -- "$v6_tmp" "$v6_out"; then
                 v6_success=true
                 [[ "$quiet" == "false" ]] && echo -e "${C_GREEN}✔ IPv6 检测完成并已有效存档: $(basename "$v6_out")${C_RESET}"
                 log_msg "INFO" "IPv6 检测成功: $v6_out"
@@ -1457,17 +1469,8 @@ run_check() {
                 save_config
             else
                 rm -f "$v6_tmp" 2>/dev/null || true
-                # M-11: 有效 JSON 但 IP 为空时，核实宿主是否具备 IPv6 能力
-                if host_supports_ipv6; then
-                    [[ "$quiet" == "false" ]] && echo -e "${C_YELLOW}⚠ 本机具备 IPv6 地址但检测核心未返回有效 IPv6，保留探测状态${C_RESET}"
-                    log_msg "WARN" "本机具备 IPv6 但检测核心未返回有效 IPv6 地址"
-                else
-                    [[ "$quiet" == "false" ]] && echo -e "${C_GRAY}ℹ 未检测到有效 IPv6 地址，跳过 v6 归档${C_RESET}"
-                    if [[ "$HAS_V6" == "auto" ]]; then
-                        HAS_V6="false"
-                        save_config
-                    fi
-                fi
+                [[ "$quiet" == "false" ]] && echo -e "${C_YELLOW}⚠ IPv6 报告无法写入存档，请检查目录权限${C_RESET}"
+                log_msg "WARN" "IPv6 报告无法写入存档"
             fi
         else
             rm -f "$v6_tmp" 2>/dev/null || true
@@ -2194,6 +2197,21 @@ render_risk_factor_matrix() {
     echo ""
 }
 
+# 仅统计明确的真/假。WHOIS 是旧字段名，且不能覆盖明确的 IPWHOIS=false。
+summarize_archive_factors() {
+    jq -r '
+        .Factor as $f |
+        ("Proxy", "Tor", "VPN", "Server", "Abuser", "Robot") as $factor |
+        $f[$factor] as $values |
+        ["IP2LOCATION", "ipapi", "ipregistry", "IPQS", "SCAMALYTICS", "ipdata", "IPinfo", "IPWHOIS", "DBIP"]
+        | map(if . == "IPWHOIS" and $values[.] == null then $values.WHOIS else $values[.] end)
+        | [$factor,
+           (map(select(. == true or . == "true")) | length),
+           (map(select(. == true or . == false or . == "true" or . == "false")) | length)]
+        | join("\u001f")
+    ' "$1" 2>/dev/null
+}
+
 render_risk_factor_history() {
     local target_dir="$1"
     local target_proto="$2"
@@ -2229,42 +2247,22 @@ render_risk_factor_history() {
     declare -A file_factor_det
     declare -A file_factor_tot
 
+    local fac det tot
     for (( fi=0; fi<${#hist_files[@]}; fi++ )); do
-        local hf="${hist_files[fi]}"
-        local factor_summary
-        factor_summary=$(jq -r '
-            .Factor as $F |
-            ["Proxy", "Tor", "VPN", "Server", "Abuser", "Robot"] | map(
-                . as $fac |
-                [ "IP2LOCATION", "ipapi", "ipregistry", "IPQS", "SCAMALYTICS", "ipdata", "IPinfo", "IPWHOIS", "DBIP", "WHOIS" ] |
-                [
-                    map(select(($F[$fac][.] // false) == true or ($F[$fac][.] // false) == "true")) | length,
-                    map(select(($F[$fac][.] // null) != null)) | length
-                ] | "\(.[0])/\(.[1])"
-            ) | join("\u001f")
-        ' "$hf" 2>/dev/null)
-
-        local f_idx=0
-        local f_stats=()
-        IFS=$'\x1f' read -r -a f_stats <<< "$factor_summary"
-        for st in "${f_stats[@]}"; do
-            local det="${st%%/*}"
-            local tot="${st##*/}"
-            file_factor_det["${fi}_${f_idx}"]="${det:-0}"
-            file_factor_tot["${fi}_${f_idx}"]="${tot:-0}"
-            (( ++f_idx ))
-        done
+        while IFS=$'\x1f' read -r fac det tot; do
+            file_factor_det["${fi}_${fac}"]="$det"
+            file_factor_tot["${fi}_${fac}"]="$tot"
+        done < <(summarize_archive_factors "${hist_files[fi]}")
     done
 
-    for (( fac_i=0; fac_i<${#factors[@]}; fac_i++ )); do
-        local fac="${factors[fac_i]}"
+    for fac in "${factors[@]}"; do
         printf "  %-8s  " "$fac"
         local had_detection=false
         local had_any_tested=false
 
         for (( fi=0; fi<${#hist_files[@]}; fi++ )); do
-            local detected_count="${file_factor_det["${fi}_${fac_i}"]:-0}"
-            local total_tested="${file_factor_tot["${fi}_${fac_i}"]:-0}"
+            local detected_count="${file_factor_det["${fi}_${fac}"]:-0}"
+            local total_tested="${file_factor_tot["${fi}_${fac}"]:-0}"
 
             if (( total_tested == 0 )); then
                 # M-14: 无数据时不显示绿色的“安全”
@@ -2452,7 +2450,7 @@ render_mail_and_blacklist() {
 
     local latest_file="${files[${#files[@]}-1]}"
     local p25_status
-    p25_status=$(jq -r '.Mail.Port25 // "null"' "$latest_file")
+    p25_status=$(jq -r '.Mail.Port25' "$latest_file")
     if [[ "$p25_status" == "true" ]]; then
         echo -e "  • 25 端口出站 (Port 25): ${C_GREEN}${C_BOLD}✓ 开放 (可发送外网邮件)${C_RESET}"
     elif [[ "$p25_status" == "false" ]]; then
@@ -2544,6 +2542,12 @@ get_crontab_without_ipqa() {
     crontab -l 2>/dev/null | grep -vE 'ipqa(\.sh)?["'\''[:space:]]+--cron' | grep -v '^# IPQA AUTO CHECK' || true
 }
 
+# Cron 先处理百分号，再把命令交给 shell；两层都需要转义。
+escape_cron_path() {
+    [[ "$1" != *$'\n'* && "$1" != *$'\r'* ]] || return 1
+    printf '%s' "$1" | sed -e 's/[\\"$`]/\\&/g' -e 's/%/\\%/g'
+}
+
 # ==============================================================================
 # 模块 8: 设置定时检测 (setup_cron)
 # ==============================================================================
@@ -2600,8 +2604,11 @@ setup_cron() {
     local local_min
     local_min=$(get_beijing_00_local_minute)
     local esc_script esc_log
-    esc_script=$(printf '%s' "$script_path" | sed -e 's/[\\"]/\\&/g' -e 's/%/\\%/g')
-    esc_log=$(printf '%s' "$LOG_FILE" | sed -e 's/[\\"]/\\&/g' -e 's/%/\\%/g')
+    if ! esc_script=$(escape_cron_path "$script_path") || ! esc_log=$(escape_cron_path "$LOG_FILE"); then
+        echo -e "${C_RED}无法配置定时任务: 路径包含换行符。${C_RESET}"
+        read -r -p "按回车键返回..."
+        return
+    fi
 
     local cron_line=""
     case "$opt" in
@@ -2816,27 +2823,16 @@ render_single_archive_card() {
     # 风险因子 (一次性提取 6 大安全因子检出状态，支持无数据检测)
     echo -e "  ${C_GRAY}── 🔬 核心安全因子 ─────────────────────────────────────────────────${C_RESET}"
     local factor_line="   "
-    local factor_data
-    factor_data=$(jq -r '
-        .Factor as $f |
-        ["Proxy", "Tor", "VPN", "Server", "Abuser", "Robot"] | map(
-            . as $fac |
-            [ "IP2LOCATION", "ipapi", "ipregistry", "IPQS", "SCAMALYTICS", "ipdata", "IPinfo", "IPWHOIS", "DBIP", "WHOIS" ] as $engs |
-            ($engs | map(select($f[$fac][.] != null and $f[$fac][.] != "--" and $f[$fac][.] != "")) | length) as $tested |
-            ($engs | any(($f[$fac][.] // false) == true or ($f[$fac][.] // false) == "true")) as $is_det |
-            [$fac, ($tested|tostring), ($is_det|tostring)] | join("\u001f")
-        ) | .[]
-    ' "$f" 2>/dev/null)
-    while IFS=$'\x1f' read -r fac tested is_detected; do
-        [[ -z "$fac" ]] && continue
+    local fac detected tested
+    while IFS=$'\x1f' read -r fac detected tested; do
         if [[ "$tested" -eq 0 ]]; then
             factor_line+=" ${fac}: ${C_GRAY}● 无数据${C_RESET}  "
-        elif [[ "$is_detected" == "true" ]]; then
+        elif [[ "$detected" -gt 0 ]]; then
             factor_line+=" ${fac}: ${C_RED}● 检出${C_RESET}  "
         else
             factor_line+=" ${fac}: ${C_GREEN}● 正常${C_RESET}  "
         fi
-    done <<< "$factor_data"
+    done < <(summarize_archive_factors "$f")
     echo -e "$factor_line"
 
     # 流媒体解锁 (支持绿色原生解锁、黄色DNS解锁/仅自制剧、红色屏蔽失败)
@@ -2913,7 +2909,7 @@ render_single_archive_card() {
     local p25 bl_total bl_blk
     IFS=$'\x1f' read -r p25 bl_total bl_blk < <(
         jq -r '[
-            (.Mail.Port25 // "null"),
+            .Mail.Port25,
             (.Mail.DNSBlacklist.Total // 0),
             (.Mail.DNSBlacklist.Blacklisted // 0)
         ] | join("\u001f")' "$f" 2>/dev/null
@@ -3561,9 +3557,15 @@ uninstall_ipqa() {
     if [[ "$rm_data" == "y" || "$rm_data" == "Y" ]]; then
         if is_dangerous_path "$IPQA_HOME"; then
             echo -e "${C_RED}错误: IPQA_HOME 路径 ($IPQA_HOME) 属于危险系统路径，已拒绝删除！${C_RESET}"
-        else
-            rm -rf "$IPQA_HOME"
+        elif [[ ! -f "$IPQA_HOME/ipqa.sh" || ! -f "$IPQA_HOME/config.sh" ]] ||
+             ! grep -qE 'IP Quality Archive|IP 质量存档|IPQA' "$IPQA_HOME/ipqa.sh"; then
+            echo "拒绝删除: 目标不是可验证的 IPQA 安装目录" >&2
+            exit 1
+        elif rm -rf -- "$IPQA_HOME"; then
             echo -e "${C_GREEN}✔ 已彻底删除 $IPQA_HOME${C_RESET}"
+        else
+            echo "无法彻底删除 IPQA 目录: $IPQA_HOME" >&2
+            exit 1
         fi
     else
         echo -e "${C_GRAY}ℹ️ 已保留历史存档与配置目录: $IPQA_HOME${C_RESET}"
@@ -3594,14 +3596,13 @@ update_ipqa() {
     local main_ok=false
 
     if curl -fsSL --connect-timeout 10 --max-time 60 -H "Cache-Control: no-cache" "https://raw.githubusercontent.com/Chen017/IP-Quality-Archive/main/ipqa.sh?t=$(date +%s)" -o "$tmp_file" 2>/dev/null; then
-        if validate_ipqa_candidate "$tmp_file"; then
-            mv -f "$tmp_file" "$IPQA_HOME/ipqa.sh"
+        if validate_ipqa_candidate "$tmp_file" && mv -fT -- "$tmp_file" "$IPQA_HOME/ipqa.sh"; then
             date +%s > "$IPQA_HOME/.last_script_update" 2>/dev/null || true
             echo -e "${C_GREEN}✔ IPQA 主程序已更新至最新版本${C_RESET}"
             main_ok=true
         else
             rm -f "$tmp_file"
-            echo -e "${C_RED}错误: 下载的主程序脚本校验失败 (语法错误或内容不完整)${C_RESET}\n"
+            echo -e "${C_RED}错误: 下载的主程序脚本校验或写入失败${C_RESET}\n"
         fi
     else
         rm -f "$tmp_file"
@@ -3614,15 +3615,14 @@ update_ipqa() {
 
     if curl -fsSL --connect-timeout 10 --max-time 60 -H "Cache-Control: no-cache" https://raw.githubusercontent.com/xykt/IPQuality/main/ip.sh -o "$tmp_core" 2>/dev/null || \
        curl -fsSL --connect-timeout 10 --max-time 60 https://IP.Check.Place -o "$tmp_core" 2>/dev/null; then
-        if validate_and_patch_core_candidate "$tmp_core"; then
-            mv -f "$tmp_core" "$IP_SCRIPT"
+        if validate_and_patch_core_candidate "$tmp_core" && mv -fT -- "$tmp_core" "$IP_SCRIPT"; then
             date +%s > "$IPQA_HOME/.last_core_update" 2>/dev/null || true
             rm -f "$IPQA_HOME/.last_auto_update" 2>/dev/null || true
             echo -e "${C_GREEN}✔ IPQuality 检测核心已成功同步至最新版本！${C_RESET}"
             core_ok=true
         else
             rm -f "$tmp_core"
-            echo -e "${C_YELLOW}⚠ 检测核心 patch 规则应用或语法校验未通过，已保留本地版本${C_RESET}"
+            echo -e "${C_YELLOW}⚠ 检测核心校验、修补或写入失败，已保留本地版本${C_RESET}"
         fi
     else
         rm -f "$tmp_core"
@@ -3638,6 +3638,9 @@ update_ipqa() {
     elif [[ "$main_ok" == "true" ]]; then
         echo -e "\n${C_YELLOW}${C_BOLD}✔ IPQA 主程序已更新完成，检测核心保持现有版本。${C_RESET}\n"
         exit 0
+    elif [[ "$core_ok" == "true" ]]; then
+        echo -e "\n${C_YELLOW}${C_BOLD}⚠ IPQA 主程序更新失败，检测核心已更新。${C_RESET}\n"
+        exit 1
     else
         echo -e "\n${C_RED}${C_BOLD}✗ 更新失败，未更改本地脚本。${C_RESET}\n"
         exit 1
@@ -4024,7 +4027,7 @@ main_loop() {
     while true; do
         render_panel
         echo -ne "${C_CYAN}请输入指令: ${C_RESET}"
-        read -r choice
+        read -r choice || return 0
         case "$choice" in
             1) show_ip_type ;;
             2) show_risk_score ;;

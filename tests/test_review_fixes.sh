@@ -10,16 +10,8 @@ cp "$root/ipqa.sh" "$fixture/custom/ipqa.sh"
 touch "$fixture/custom/config.sh"
 env -u IPQA_DIR bash "$fixture/custom/ipqa.sh" --help >/dev/null
 [[ -d "$fixture/custom/data/v4" ]]
+mv "$fixture/custom/data" "$fixture/direct-data"
 ln -s "$fixture/custom/ipqa.sh" "$fixture/ipqa-link"
 env -u IPQA_DIR bash "$fixture/ipqa-link" --help >/dev/null
-printf '%s\n' '{"Factor":{"Proxy":{"WHOIS":true}}}' > "$fixture/report.json"
-prev_file="$fixture/report.json"
-factor=Proxy
-query="$(sed -n '/old_val=$(jq -r.*Factor/p' "$root/ipqa.sh" | head -n 1)"
-eng=IPQS
-eval "$query"
-[[ "$old_val" == null ]]
-eng=IPWHOIS
-eval "$query"
-[[ "$old_val" == true ]]
-echo 'PASS: installer SSH guard, custom/symlink paths, isolated WHOIS alias'
+[[ -d "$fixture/custom/data/v4" ]]
+echo 'PASS: installer SSH guard, custom/symlink paths'

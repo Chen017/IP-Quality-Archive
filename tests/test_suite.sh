@@ -28,25 +28,25 @@ echo "开始运行 IPQA 自动化回归测试"
 echo "=============================================================================="
 
 # N-06: 严格沙箱隔离测试环境，杜绝污染或修改真实的 ~/.ipqa
-TEST_ENV_DIR="$(mktemp -d 2>/dev/null || echo "/tmp/ipqa_test.$$")"
+TEST_ENV_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TEST_ENV_DIR"' EXIT
+export HOME="$TEST_ENV_DIR/home"
 export IPQA_DIR="$TEST_ENV_DIR/ipqa_home"
 export IPQA_HOME="$IPQA_DIR"
-mkdir -p "$IPQA_DIR"
-trap 'rm -rf "$TEST_ENV_DIR"' EXIT
+mkdir -p "$HOME" "$IPQA_DIR"
 
-# 1. 语法检查测试 (bash -n)
-echo -e "\n[测试组 1] 语法与结构完整性检查:"
-if bash -n "$REPO_ROOT/install.sh"; then
-    pass "install.sh 语法校验通过"
-else
-    fail "install.sh 语法校验" "发现语法错误"
+if [[ $# -gt 1 || ! "${1:-awk}" =~ ^(awk|mawk|gawk)$ ]]; then
+    echo "Usage: bash tests/test_suite.sh [awk|mawk|gawk]" >&2
+    exit 2
 fi
-
-if bash -n "$REPO_ROOT/ipqa.sh"; then
-    pass "ipqa.sh 语法校验通过"
-else
-    fail "ipqa.sh 语法校验" "发现语法错误"
+if ! awk_bin="$(command -v "${1:-awk}")"; then
+    echo "Required awk implementation missing: ${1:-awk}" >&2
+    exit 1
 fi
+mkdir -p "$TEST_ENV_DIR/bin"
+ln -s "$awk_bin" "$TEST_ENV_DIR/bin/awk"
+export PATH="$TEST_ENV_DIR/bin:$PATH"
+echo "awk: $awk_bin"
 
 # 2. 生产危险路径检测测试 (M-04A, M-04B, S-14A: 直接抽取测试生产代码)
 echo -e "\n[测试组 2] 生产危险路径防护测试 (M-04A, M-04B):"
@@ -297,6 +297,23 @@ fi
 
 # 6. Cron 正则与路径转义测试 (N-01, M-19, M-20, UI-01)
 echo -e "\n[测试组 6] Cron 规则识别、转义与半小时时区换算 (N-01, M-19, M-20, UI-01):"
+
+cron_path='/tmp/IPQA space/$HOME/`echo unexpected`/quote"and\%/ipqa.sh'
+for entry in install.sh ipqa.sh; do
+    if (
+        eval "$(sed -n '/^escape_cron_path()/,/^}/p' "$REPO_ROOT/$entry")"
+        escaped=$(escape_cron_path "$cron_path") || exit 1
+        [[ "$escaped" == *'\%'* ]] || exit 1
+        # Cron removes the escape immediately preceding percent before sh runs.
+        shell_path="${escaped//\\%/%}"
+        [[ "$(sh -c "printf '%s' \"$shell_path\"")" == "$cron_path" ]] &&
+            ! escape_cron_path $'/tmp/first\nsecond'
+    ); then
+        pass "$entry 的 Cron 路径保留 shell 特殊字符并拒绝换行"
+    else
+        fail "Cron 路径转义" "$entry 的路径发生展开或被 Cron 截断"
+    fi
+done
 cron_cmd_quoted='"../ipqa" --cron'
 cron_cmd_unquoted='../ipqa.sh --cron'
 cron_regex='ipqa(\.sh)?["'\''[:space:]]+--cron'
@@ -402,6 +419,7 @@ fi
 # 8. 生产原子互斥锁与 Stale-Lock 恢复测试 (M-08A, M-08B)
 echo -e "\n[测试组 8] 生产原子互斥锁、Stale-Lock 恢复与跨进程互斥 (M-08A, M-08B):"
 eval "$(sed -n '/^get_current_pid()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
+eval "$(sed -n '/^create_owned_lock()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 eval "$(sed -n '/^acquire_lock()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 eval "$(sed -n '/^release_lock()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
 
@@ -435,7 +453,19 @@ fi
 
 # 测试 Stale-Lock 恢复
 mkdir -p "$IPQA_DIR/.lock_test_mutex"
-echo "999999" > "$IPQA_DIR/.lock_test_mutex/pid" # 假设一个已不存在的 PID
+(exit 0) &
+stale_pid=$!
+wait "$stale_pid"
+echo "$stale_pid" > "$IPQA_DIR/.lock_test_mutex/pid"
+if (
+    flock -n 9 || exit 1
+    ! acquire_lock "test_mutex" &&
+        [[ $(cat "$IPQA_DIR/.lock_test_mutex/pid") == "$stale_pid" ]]
+) 9>>"$IPQA_DIR/.lock_test_mutex.reclaim"; then
+    pass "已有进程正在恢复失效锁时，竞争者不移动锁目录"
+else
+    fail "失效锁并发恢复" "竞争者绕过了恢复互斥"
+fi
 if acquire_lock "test_mutex"; then
     pass "检测到失效 PID 时成功原子竞争并夺取 Stale 锁 (M-08B)"
     release_lock "test_mutex"
@@ -448,35 +478,44 @@ LOCK_TEST_DIR="$TEST_ENV_DIR/lock_race_test"
 mkdir -p "$LOCK_TEST_DIR"
 (
     export IPQA_HOME="$LOCK_TEST_DIR"
-    acquire_lock "main"
-    sleep 1
-    release_lock "main"
+    acquire_lock "main" || exit 1
+    trap 'release_lock main' EXIT
+    touch "$LOCK_TEST_DIR/ready"
+    deadline=$((SECONDS + 10))
+    until [[ -f "$LOCK_TEST_DIR/release" ]]; do
+        (( SECONDS < deadline )) || exit 1
+        sleep 0.05
+    done
 ) &
 PID_A=$!
 
 # 等待 Process A 成功持锁
-for ((try=0; try<20; try++)); do
-    [[ -f "$LOCK_TEST_DIR/.lock_main/pid" ]] && break
+deadline=$((SECONDS + 10))
+until [[ -f "$LOCK_TEST_DIR/ready" ]]; do
+    if (( SECONDS >= deadline )) || ! kill -0 "$PID_A" 2>/dev/null; then
+        break
+    fi
     sleep 0.05
 done
 
 # Process B 尝试加锁 (不同进程，PID 与 BASHPID 均不同)
-B_ACQUIRED=0
-if (
+if [[ ! -f "$LOCK_TEST_DIR/ready" ]]; then
+    fail "主锁跨进程互斥" "Process A 未能在限时内持锁"
+elif (
     export IPQA_HOME="$LOCK_TEST_DIR"
-    acquire_lock "main"
+    acquire_lock "main" || exit 1
+    release_lock "main"
 ) 2>/dev/null; then
-    B_ACQUIRED=1
-fi
-
-if [[ "$B_ACQUIRED" -eq 0 ]]; then
-    pass "Process A 持锁期间，Process B 竞争主锁被成功拦截且未误判为重入"
-else
     fail "主锁跨进程互斥" "Process B 在 Process A 持锁期间错误获取了锁"
+else
+    pass "Process A 持锁期间，Process B 竞争主锁被成功拦截且未误判为重入"
 fi
 
 # 等待 Process A 释放
-wait "$PID_A" 2>/dev/null || true
+touch "$LOCK_TEST_DIR/release"
+if ! wait "$PID_A"; then
+    fail "主锁跨进程互斥" "Process A 持锁子进程异常退出"
+fi
 
 # Process B 再次尝试加锁，此时必须成功
 B_SUCCESS_AFTER=0
@@ -786,14 +825,6 @@ else
     fail "DNS 类型回归" "普通 DNS、真实改写、对照服务器故障或重复补丁测试失败"
 fi
 
-if ! grep -Fq 'remote_ver=' "$REPO_ROOT/ipqa.sh" &&
-   grep -Fq 'the fully patched content instead' "$REPO_ROOT/ipqa.sh" &&
-   grep -Fq 'cmp -s "$tmp_ip" "$IP_SCRIPT"' "$REPO_ROOT/ipqa.sh"; then
-    pass "检测核心每日按内容同步，不再因相同 script_version 漏掉上游修复"
-else
-    fail "核心同步" "仍可能仅按 script_version 跳过同版本内容更新"
-fi
-
 echo -e "\n=============================================================================="
 echo "测试结果汇总前，执行归档与解锁回归检查"
 eval "$(sed -n '/^validate_json()/,/^}/p' "$REPO_ROOT/ipqa.sh")"
@@ -857,14 +888,19 @@ else
     fail "Lite 评分离线回归" "评分查询、有效值显示或空值处理异常"
 fi
 if bash "$REPO_ROOT/tests/test_awk_compat.sh"; then
-    pass "可用 awk 实现均可执行核心补丁且保持幂等"
+    pass "当前 awk 实现可执行安装器与运行时核心补丁且保持幂等"
 else
     fail "awk 兼容性回归" "核心补丁语法或执行行为不兼容"
 fi
-if bash "$REPO_ROOT/tests/test_review_fixes.sh"; then
-    pass "安装保护、自定义目录和 WHOIS 别名隔离"
+if bash "$REPO_ROOT/tests/test_runtime.sh"; then
+    pass "真实命令入口的核心同步、双栈归档、告警与写入失败回归"
 else
-    fail "审查修复回归" "安装路径或别名异常"
+    fail "命令入口回归" "同步、归档、告警或失败恢复异常"
+fi
+if bash "$REPO_ROOT/tests/test_review_fixes.sh"; then
+    pass "安装路径保护及自定义目录的软链接解析"
+else
+    fail "审查修复回归" "安装路径或软链接解析异常"
 fi
 if bash "$REPO_ROOT/tests/test_archive_performance.sh"; then
     pass "存档近邻匹配、跨午夜与列表缓存回归"

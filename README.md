@@ -146,6 +146,7 @@ IPQA 本身不依赖 Komari，可以单独部署和使用。
 - [Komari Emerald Insights](https://github.com/Chen017/komari-theme-emerald-insights)：现代化 Komari 前端主题
 - [IPQA Alert Report](https://github.com/Chen017/komari-plugin-ipqa-alert-report)：IPQA 数据同步、历史 API 与告警插件
 - [Availability History](https://github.com/Chen017/komari-plugin-availability-history)：基于事件账本的精确在线率插件
+- [Line Quality Monitor](https://github.com/Chen017/komari-plugin-line-quality-monitor) · VPS 到探测点的延迟波动、持续升高与改善通知
 
 Availability History 与 IPQA 功能互相独立，不是 IPQA 的必需依赖。
 
